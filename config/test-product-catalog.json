@@ -1,0 +1,32 @@
+{
+  "categories": [
+    {
+      "id": 1,
+      "name": "Хозтовары"
+    }
+  ],
+  "products": [
+    {
+      "id": 1,
+      "name": "Ariel для белого",
+      "category_ids": [1],
+      "urls": [
+        {
+          "shop": "eva",
+          "url": "https://eva.ua/pr360698/"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "name": "Ariel для цветного",
+      "category_ids": [1],
+      "urls": [
+        {
+          "shop": "eva",
+          "url": "https://eva.ua/pr360641/"
+        }
+      ]
+    }
+  ]
+}
