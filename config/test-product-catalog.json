@@ -1,4 +1,10 @@
 {
+  "shops": [
+    {
+      "id": 1,
+      "name": "eva"
+    }
+  ],
   "categories": [
     {
       "id": 1,
@@ -12,7 +18,7 @@
       "category_ids": [1],
       "urls": [
         {
-          "shop": "eva",
+          "shop_id": 1,
           "url": "https://eva.ua/pr360698/"
         }
       ]
@@ -23,7 +29,7 @@
       "category_ids": [1],
       "urls": [
         {
-          "shop": "eva",
+          "shop_id": 1,
           "url": "https://eva.ua/pr360641/"
         }
       ]

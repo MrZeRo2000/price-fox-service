@@ -1,4 +1,14 @@
 {
+  "shops": [
+    {
+      "id": 1,
+      "name": "eva"
+    },
+    {
+      "id": 2,
+      "name": "ATB"
+    }
+  ],
   "categories": [
     {
       "id": 1,
@@ -20,7 +30,7 @@
       "category_ids": [1],
       "urls": [
         {
-          "shop": "eva",
+          "shop_id": 1,
           "url": "https://eva.ua/pr360698/"
         }
       ]
@@ -31,7 +41,7 @@
       "category_ids": [1],
       "urls": [
         {
-          "shop": "eva",
+          "shop_id": 1,
           "url": "https://eva.ua/pr360641/"
         }
       ]
@@ -42,7 +52,7 @@
       "category_ids": [2],
       "urls": [
         {
-          "shop": "eva",
+          "shop_id": 1,
           "url": "https://eva.ua/pr12993/"
         }
       ]
@@ -53,7 +63,7 @@
       "category_ids": [3],
       "urls": [
         {
-          "shop": "ATB",
+          "shop_id": 2,
           "url": "https://www.atbmarket.com/ru/product/sir-makij-180-g-premialle-felata-45-pup"
         }
       ]
