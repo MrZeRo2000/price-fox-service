@@ -1,3 +1,8 @@
 pytest
 playwright
 pydantic
+beautifulsoup4
+lxml
+transformers
+torch
+sentencepiece

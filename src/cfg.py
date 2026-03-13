@@ -16,9 +16,19 @@ class Configuration:
         if not os.path.exists(product_catalog_path):
             raise ValueError(f"Product catalog path {product_catalog_path} does not exist")
 
+        self._data_path = data_path
+        self._product_catalog_path = product_catalog_path
         self._product_catalog_data = CatalogData.model_validate_json(Path(product_catalog_path).read_text(encoding='utf-8'))
 
         pass
+
+    @property
+    def data_path(self):
+        return self._data_path
+
+    @property
+    def product_catalog_path(self):
+        return self._product_catalog_path
 
     @property
     def product_catalog_data(self):
