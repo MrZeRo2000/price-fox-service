@@ -5,10 +5,13 @@ import hashlib
 import json
 import shutil
 import re
+import logging
+import os
 from datetime import datetime
 from typing import Optional
 
 from bs4 import BeautifulSoup
+from huggingface_hub import snapshot_download
 from transformers import pipeline
 from cfg import Configuration
 from models import ScrapeSession
@@ -40,12 +43,13 @@ class Fetcher:
         self.scrape_session = scrape_session
 
     @staticmethod
-    def content_stable_wait(page, max_wait=120):
+    def content_stable_wait(page, max_wait=120, logger: Optional[logging.Logger] = None):
         """
         Maximum reliability for content only - ignores images
         (same as before - keeping it for completeness)
         """
-        print("🔒 Waiting for content stability...\n")
+        active_logger = logger or logging.getLogger("price_fox")
+        active_logger.info("🔒 Waiting for content stability...")
         start_time = time.time()
         checks = {}
 
@@ -54,13 +58,13 @@ class Fetcher:
             try:
                 page.wait_for_load_state("networkidle", timeout=30000)
                 checks[f'networkidle_{attempt}'] = True
-                print(f"  ✓ Network idle (check {attempt + 1}/3)")
+                active_logger.info(f"  ✓ Network idle (check {attempt + 1}/3)")
                 time.sleep(2)
             except:
                 checks[f'networkidle_{attempt}'] = False
 
         # Content stabilization
-        print("  Checking content stability...")
+        active_logger.info("  Checking content stability...")
         stable_count = 0
         required_stable = 5
         last_hash = ""
@@ -81,7 +85,7 @@ class Fetcher:
                 stable_count += 1
                 if stable_count >= required_stable:
                     checks['content_stable'] = True
-                    print(f"  ✓ Content stable ({content_signature})")
+                    active_logger.info(f"  ✓ Content stable ({content_signature})")
                     break
             else:
                 stable_count = 0
@@ -128,8 +132,8 @@ class Fetcher:
         passed = sum(1 for v in checks.values() if v)
         total = len(checks)
 
-        print(f"  ⏱️  Wait time: {elapsed:.1f}s")
-        print(f"  ✅ Reliability: {passed}/{total} ({passed / total * 100:.1f}%)\n")
+        active_logger.info(f"  ⏱️  Wait time: {elapsed:.1f}s")
+        active_logger.info(f"  ✅ Reliability: {passed}/{total} ({passed / total * 100:.1f}%)")
 
         return {
             "elapsed": elapsed,
@@ -139,19 +143,20 @@ class Fetcher:
         }
 
     @staticmethod
-    def save_single_page(page, url, output_dir, browser_session_id):
+    def save_single_page(page, url, output_dir, browser_session_id, logger: Optional[logging.Logger] = None):
         """
         Saves a single page using an existing page instance
         """
+        active_logger = logger or logging.getLogger("price_fox")
         timestamp = time.strftime("%Y%m%d_%H%M%S")
         safe_name = url.replace("https://", "").replace("http://", "").replace("/", "_")[:50]
         base_name = f"{safe_name}_{timestamp}"
         retry_intervals_seconds = [2, 5, 10]
         max_retries = len(retry_intervals_seconds)
 
-        print(f"{'=' * 70}")
-        print(f"🌐 URL: {url}")
-        print(f"{'=' * 70}\n")
+        active_logger.info(f"{'=' * 70}")
+        active_logger.info(f"🌐 URL: {url}")
+        active_logger.info(f"{'=' * 70}")
 
         try:
             html_content = ""
@@ -161,25 +166,25 @@ class Fetcher:
 
             for attempt in range(max_retries + 1):
                 attempt_count = attempt + 1
-                print(f"Loading page... (attempt {attempt_count}/{max_retries + 1})")
+                active_logger.info(f"Loading page... (attempt {attempt_count}/{max_retries + 1})")
                 page.goto(url, wait_until="domcontentloaded", timeout=60000)
 
                 # Wait for content stability
-                wait_result = Fetcher.content_stable_wait(page, max_wait=120)
+                wait_result = Fetcher.content_stable_wait(page, max_wait=120, logger=active_logger)
 
                 # Extract content
-                print("📦 Extracting content...")
+                active_logger.info("📦 Extracting content...")
                 html_content = page.content()
                 text_content = page.evaluate("() => document.body.innerText")
                 text_length = len(text_content.strip())
 
                 if text_length > 0:
-                    print(f"  ✅ Extracted non-empty text ({text_length:,} chars)")
+                    active_logger.info(f"  ✅ Extracted non-empty text ({text_length:,} chars)")
                     break
 
                 if attempt < max_retries:
                     retry_delay = retry_intervals_seconds[attempt]
-                    print(
+                    active_logger.warning(
                         f"  ⚠️ Empty text content (text_length=0). "
                         f"Retrying in {retry_delay}s..."
                     )
@@ -194,12 +199,12 @@ class Fetcher:
             html_path = f"{output_dir}/{base_name}.html"
             with open(html_path, "w", encoding="utf-8") as f:
                 f.write(html_content)
-            print(f"  💾 HTML: {len(html_content):,} bytes")
+            active_logger.info(f"  💾 HTML: {len(html_content):,} bytes")
 
             text_path = f"{output_dir}/{base_name}.txt"
             with open(text_path, "w", encoding="utf-8") as f:
                 f.write(text_content)
-            print(f"  💾 Text: {len(text_content):,} chars")
+            active_logger.info(f"  💾 Text: {len(text_content):,} chars")
 
             # 3. Metadata
             metadata = {
@@ -219,7 +224,7 @@ class Fetcher:
             with open(metadata_path, "w", encoding="utf-8") as f:
                 json.dump(metadata, f, indent=2, ensure_ascii=False)
 
-            print(f"  ✅ Success! Reliability: {wait_result['success_rate'] * 100:.1f}%\n")
+            active_logger.info(f"  ✅ Success! Reliability: {wait_result['success_rate'] * 100:.1f}%")
 
             return {
                 "url": url,
@@ -232,7 +237,7 @@ class Fetcher:
             }
 
         except Exception as e:
-            print(f"  ❌ Error: {e}\n")
+            active_logger.error(f"  ❌ Error: {e}")
             return {
                 "url": url,
                 "status": "failed",
@@ -240,27 +245,28 @@ class Fetcher:
             }
 
     @staticmethod
-    def batch_scrape_optimized(urls, output_dir="batch_scrapes", delay_between_pages=3):
+    def batch_scrape_optimized(urls, output_dir="batch_scrapes", delay_between_pages=3, logger: Optional[logging.Logger] = None):
         """
         OPTIMIZED: Reuses browser instance for all URLs
         """
+        active_logger = logger or logging.getLogger("price_fox")
         Path(output_dir).mkdir(exist_ok=True)
 
         browser_session_id = time.strftime("%Y%m%d_%H%M%S")
         results = []
 
-        print(f"\n{'=' * 70}")
-        print(f"🚀 BATCH SCRAPING - OPTIMIZED MODE")
-        print(f"{'=' * 70}")
-        print(f"URLs to process: {len(urls)}")
-        print(f"Output directory: {output_dir}")
-        print(f"Delay between pages: {delay_between_pages}s")
-        print(f"Browser session ID: {browser_session_id}")
-        print(f"{'=' * 70}\n")
+        active_logger.info(f"{'=' * 70}")
+        active_logger.info("🚀 BATCH SCRAPING - OPTIMIZED MODE")
+        active_logger.info(f"{'=' * 70}")
+        active_logger.info(f"URLs to process: {len(urls)}")
+        active_logger.info(f"Output directory: {output_dir}")
+        active_logger.info(f"Delay between pages: {delay_between_pages}s")
+        active_logger.info(f"Browser session ID: {browser_session_id}")
+        active_logger.info(f"{'=' * 70}")
 
         with sync_playwright() as p:
             # Create browser ONCE
-            print("🔧 Launching browser...")
+            active_logger.info("🔧 Launching browser...")
             browser = p.chromium.launch(headless=True)
 
             # Create context with realistic settings
@@ -273,24 +279,30 @@ class Fetcher:
             page = context.new_page()
             page.set_default_timeout(120000)
 
-            print(f"✓ Browser ready\n")
+            active_logger.info("✓ Browser ready")
 
             # Process all URLs with the same browser
             start_time = time.time()
 
             for i, url in enumerate(urls, 1):
-                print(f"📄 Processing {i}/{len(urls)}")
+                active_logger.info(f"📄 Processing {i}/{len(urls)}")
 
-                result = Fetcher.save_single_page(page, url, output_dir, browser_session_id)
+                result = Fetcher.save_single_page(
+                    page,
+                    url,
+                    output_dir,
+                    browser_session_id,
+                    logger=active_logger,
+                )
                 results.append(result)
 
                 # Delay between pages (be nice to servers)
                 if i < len(urls):
-                    print(f"⏳ Waiting {delay_between_pages}s before next page...\n")
+                    active_logger.info(f"⏳ Waiting {delay_between_pages}s before next page...")
                     time.sleep(delay_between_pages)
 
             # Close browser ONCE at the end
-            print("🔧 Closing browser...")
+            active_logger.info("🔧 Closing browser...")
             browser.close()
 
             total_time = time.time() - start_time
@@ -310,16 +322,16 @@ class Fetcher:
         with open(summary_path, "w") as f:
             json.dump(summary, f, indent=2)
 
-        print(f"\n{'=' * 70}")
-        print(f"✅ BATCH COMPLETE")
-        print(f"{'=' * 70}")
-        print(f"Total URLs: {summary['total_urls']}")
-        print(f"Successful: {summary['successful']}")
-        print(f"Failed: {summary['failed']}")
-        print(f"Total time: {total_time:.1f}s")
-        print(f"Avg per URL: {summary['avg_time_per_url']:.1f}s")
-        print(f"Summary: {summary_path}")
-        print(f"{'=' * 70}\n")
+        active_logger.info(f"{'=' * 70}")
+        active_logger.info("✅ BATCH COMPLETE")
+        active_logger.info(f"{'=' * 70}")
+        active_logger.info(f"Total URLs: {summary['total_urls']}")
+        active_logger.info(f"Successful: {summary['successful']}")
+        active_logger.info(f"Failed: {summary['failed']}")
+        active_logger.info(f"Total time: {total_time:.1f}s")
+        active_logger.info(f"Avg per URL: {summary['avg_time_per_url']:.1f}s")
+        active_logger.info(f"Summary: {summary_path}")
+        active_logger.info(f"{'=' * 70}")
 
         return results
 
@@ -378,7 +390,11 @@ class Fetcher:
             return []
 
         urls = [job["url"] for job in jobs]
-        raw_results = Fetcher.batch_scrape_optimized(urls=urls, output_dir=str(data_root))
+        raw_results = Fetcher.batch_scrape_optimized(
+            urls=urls,
+            output_dir=str(data_root),
+            logger=self.configuration.logger,
+        )
 
         all_results = []
         for job, result in zip(jobs, raw_results):
@@ -417,11 +433,66 @@ class Parser:
 
     def __init__(self, configuration: Configuration, model_id: str = "Qwen/Qwen2.5-1.5B-Instruct"):
         self.configuration = configuration
+        self.logger = configuration.logger
         self.model_id = model_id
         self.generator = None
         self.generator_task = None
         self._generator_init_error = None
+        self._shop_name_by_id = {
+            shop.id: shop.name for shop in self.configuration.product_catalog_data.shops
+        }
+        self._product_name_by_id = {
+            product.id: product.name for product in self.configuration.product_catalog_data.products
+        }
+        self._url_by_product_shop = {}
+        for product in self.configuration.product_catalog_data.products:
+            for shop_url in product.urls:
+                self._url_by_product_shop[(product.id, shop_url.shop_id)] = str(shop_url.url)
         self._init_generator()
+
+    @staticmethod
+    def _enable_hf_offline_mode():
+        # Enforce fully-local inference and keep output clean.
+        os.environ["HF_HUB_OFFLINE"] = "1"
+        os.environ["TRANSFORMERS_OFFLINE"] = "1"
+        os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
+
+    @staticmethod
+    def _enable_hf_online_mode():
+        # Temporarily allow network only for one-time model bootstrap.
+        os.environ.pop("HF_HUB_OFFLINE", None)
+        os.environ.pop("TRANSFORMERS_OFFLINE", None)
+        os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
+
+    def _is_model_cached_locally(self) -> bool:
+        try:
+            snapshot_download(
+                repo_id=self.model_id,
+                local_files_only=True,
+            )
+            return True
+        except Exception:
+            return False
+
+    def _ensure_model_available_locally(self):
+        if self._is_model_cached_locally():
+            self.logger.info(f"Model '{self.model_id}' found in local HF cache.")
+            return
+
+        self.logger.warning(
+            f"Model '{self.model_id}' not found in local HF cache. Starting one-time download."
+        )
+        self._enable_hf_online_mode()
+        try:
+            snapshot_download(
+                repo_id=self.model_id,
+                resume_download=True,
+            )
+            self.logger.info(
+                f"Model '{self.model_id}' downloaded to local HF cache."
+            )
+        finally:
+            self._enable_hf_offline_mode()
 
     @staticmethod
     def _is_session_folder_name(folder_name: str) -> bool:
@@ -443,7 +514,22 @@ class Parser:
         )
         return session_folders[-1] if session_folders else base_data_root
 
+    def _resolve_catalog_context(self, product_id: int, shop_id: int) -> tuple[str, str, Optional[str]]:
+        product_name = self._product_name_by_id.get(product_id, f"unknown_product_{product_id}")
+        shop_name = self._shop_name_by_id.get(shop_id, f"unknown_shop_{shop_id}")
+        url = self._url_by_product_shop.get((product_id, shop_id))
+        return product_name, shop_name, url
+
     def _init_generator(self):
+        try:
+            self._ensure_model_available_locally()
+        except Exception as exc:
+            self._generator_init_error = (
+                f"Model bootstrap failed for '{self.model_id}': {exc}"
+            )
+            return
+
+        self._enable_hf_offline_mode()
         tasks = ("text2text-generation", "text-generation")
         last_error = None
 
@@ -453,6 +539,7 @@ class Parser:
                     task=task,
                     model=self.model_id,
                     tokenizer=self.model_id,
+                    local_files_only=True,
                 )
                 self.generator_task = task
                 self._generator_init_error = None
@@ -460,7 +547,13 @@ class Parser:
             except Exception as exc:
                 last_error = exc
 
-        self._generator_init_error = str(last_error) if last_error is not None else "Unknown initialization error"
+        if last_error is None:
+            self._generator_init_error = "Unknown initialization error"
+            return
+        self._generator_init_error = (
+            f"{last_error}. Offline mode is enabled; pre-download '{self.model_id}' "
+            "to local cache before running."
+        )
 
     @staticmethod
     def _find_primary_file(shop_folder: Path, extension: str) -> Optional[Path]:
@@ -570,14 +663,8 @@ class Parser:
             '"confidence": number}\n'
             "Rules:\n"
             "- Pick the current selling price, not old/discount labels if possible.\n"
-            "- Prefer price figures shown in larger or visually prominent font.\n"
-            "- If two candidates are similar, choose the one that is both higher on page and larger visually.\n"
-            "- Prefer figures that include a decimal separator (dot or comma), as these are more likely real prices.\n"
-            "- Set price_type=product only for the main item selling price.\n"
-            "- Delivery/shipping/courier fee must be price_type=delivery.\n"
-            "- Old/crossed/discount-before price must be price_type=old_price.\n"
-            "- Ignore other unrelated offers.\n"
-            "- Prefer the value with the button nearby.\n"            
+            "- If two candidates are similar, choose shown in larger or visually prominent font and the one that is both higher on page and larger visually.\n"
+            "- Ignore other unrelated offers.\n"            
             "- confidence must be a number from 0 to 1.\n"
             "- If no price is found, use null values and confidence 0.\n\n"
             f"TEXT:\n{text}"
@@ -603,9 +690,8 @@ class Parser:
         return mapped if mapped in {"product", "delivery", "old_price", "other"} else "other"
 
     @staticmethod
-    def _infer_price_type_from_text(line_text: str) -> str:
-        lower = line_text.lower()
-        delivery_markers = (
+    def _delivery_markers() -> tuple[str, ...]:
+        return (
             "доставка",
             "shipping",
             "delivery",
@@ -614,8 +700,19 @@ class Parser:
             "курьер",
             "самовивіз",
             "самовывоз",
+            "pickup",
+            "пошта",
+            "нова пошта",
+            "nova poshta",
+            "відправка",
+            "отправка",
+            "postal",
+            "postomat",
         )
-        old_price_markers = (
+
+    @staticmethod
+    def _old_price_markers() -> tuple[str, ...]:
+        return (
             "стара ціна",
             "старая цена",
             "old price",
@@ -627,12 +724,45 @@ class Parser:
             "скидка",
             "акція",
             "акция",
+            "regular price",
+            "strike",
         )
-        if any(marker in lower for marker in delivery_markers):
+
+    @staticmethod
+    def _product_markers() -> tuple[str, ...]:
+        return (
+            "ціна",
+            "цена",
+            "price",
+            "вартість",
+            "вартiсть",
+            "грн",
+            "uah",
+            "₴",
+            "buy",
+            "купити",
+            "в кошик",
+            "в корзину",
+            "add to cart",
+            "in stock",
+            "наявн",
+            "в наявност",
+            "sale price",
+            "current price",
+        )
+
+    @staticmethod
+    def _context_price_type(text: str) -> str:
+        lower = text.lower()
+        if any(marker in lower for marker in Parser._delivery_markers()):
             return "delivery"
-        if any(marker in lower for marker in old_price_markers):
+        if any(marker in lower for marker in Parser._old_price_markers()):
             return "old_price"
         return "product"
+
+    @staticmethod
+    def _infer_price_type_from_text(line_text: str) -> str:
+        return Parser._context_price_type(line_text)
 
     @staticmethod
     def _to_number(raw_value: str) -> Optional[float]:
@@ -684,7 +814,9 @@ class Parser:
             "value",
         )
         selectors = (
+            "[itemtype*='Product'] [itemprop='price']",
             "meta[itemprop='price']",
+            "[itemprop='offers'] [itemprop='price']",
             "[data-price]",
             "[data-product-price]",
             "[data-current-price]",
@@ -695,29 +827,109 @@ class Parser:
         )
 
         best = None
+        number_pattern = re.compile(r"\d{1,6}(?:[ \u00A0]?\d{3})*(?:[.,]\d{1,2})?")
+
+        # Prefer explicit structured product metadata when present.
+        for script in soup.select("script[type='application/ld+json']"):
+            payload = script.string or script.get_text(" ", strip=True)
+            if not payload:
+                continue
+            try:
+                parsed = json.loads(payload)
+            except Exception:
+                continue
+            objects = parsed if isinstance(parsed, list) else [parsed]
+            for item in objects:
+                if not isinstance(item, dict):
+                    continue
+                offers = item.get("offers")
+                offers_list = offers if isinstance(offers, list) else [offers]
+                for offer in offers_list:
+                    if not isinstance(offer, dict):
+                        continue
+                    raw_price = offer.get("price")
+                    if raw_price is None:
+                        continue
+                    value = Parser._to_number(str(raw_price))
+                    if value is None:
+                        continue
+                    currency = offer.get("priceCurrency")
+                    if isinstance(currency, str):
+                        currency = currency.strip().upper() or None
+                    candidate = {
+                        "status": "success",
+                        "price": int(value) if float(value).is_integer() else value,
+                        "currency": currency,
+                        "raw_price_text": str(raw_price),
+                        "price_type": "product",
+                        "evidence_text": str(offer)[:300],
+                        "confidence": 0.97,
+                        "provider": "html-heuristic",
+                    }
+                    if best is None or candidate["confidence"] > best["confidence"]:
+                        best = candidate
+
         for selector in selectors:
             for node in soup.select(selector):
                 raw = " ".join(
                     [node.get(key, "") for key in attribute_keys if node.get(key, "")]
                 ) or node.get_text(" ", strip=True)
-                match = re.search(r"\d{1,6}(?:[ \u00A0]?\d{3})*(?:[.,]\d{1,2})?", raw)
-                if not match:
+                matches = number_pattern.findall(raw)
+                if not matches:
                     continue
-                value = Parser._to_number(match.group(0))
-                if value is None:
+
+                context_parts = [raw]
+                parent = node.parent
+                if parent is not None:
+                    context_parts.append(parent.get_text(" ", strip=True)[:280])
+                    parent_attrs = " ".join(
+                        [
+                            parent.get("class", "") if isinstance(parent.get("class"), str) else " ".join(parent.get("class", [])),
+                            parent.get("id", "") or "",
+                            parent.get("itemprop", "") or "",
+                        ]
+                    )
+                    context_parts.append(parent_attrs)
+                node_attrs = " ".join(
+                    [
+                        node.get("class", "") if isinstance(node.get("class"), str) else " ".join(node.get("class", [])),
+                        node.get("id", "") or "",
+                        node.get("itemprop", "") or "",
+                        node.get("name", "") or "",
+                    ]
+                )
+                context_parts.append(node_attrs)
+                context_text = " ".join(part for part in context_parts if part).strip()
+                context_type = Parser._context_price_type(context_text)
+
+                if context_type == "delivery":
                     continue
-                candidate = {
-                    "status": "success",
-                    "price": int(value) if float(value).is_integer() else value,
-                    "currency": Parser._normalize_currency(raw),
-                    "raw_price_text": match.group(0),
-                    "price_type": "product",
-                    "evidence_text": raw[:300],
-                    "confidence": 0.92,
-                    "provider": "html-heuristic",
-                }
-                if best is None or candidate["confidence"] > best["confidence"]:
-                    best = candidate
+
+                for raw_number in matches:
+                    value = Parser._to_number(raw_number)
+                    if value is None:
+                        continue
+
+                    confidence = 0.83
+                    lower_context = context_text.lower()
+                    if "itemprop" in lower_context and "price" in lower_context:
+                        confidence += 0.08
+                    if any(marker in lower_context for marker in Parser._product_markers()):
+                        confidence += 0.05
+                    if context_type == "old_price":
+                        confidence -= 0.2
+                    candidate = {
+                        "status": "success",
+                        "price": int(value) if float(value).is_integer() else value,
+                        "currency": Parser._normalize_currency(context_text),
+                        "raw_price_text": raw_number,
+                        "price_type": "product" if context_type != "old_price" else "old_price",
+                        "evidence_text": context_text[:300],
+                        "confidence": max(0.0, min(0.95, confidence)),
+                        "provider": "html-heuristic",
+                    }
+                    if best is None or candidate["confidence"] > best["confidence"]:
+                        best = candidate
         return best
 
     @staticmethod
@@ -733,23 +945,26 @@ class Parser:
         number_pattern = re.compile(r"\d{1,6}(?:[ \u00A0]?\d{3})*(?:[.,]\d{1,2})?")
         best = None
 
-        for line in lines:
+        for idx, line in enumerate(lines):
             matches = number_pattern.findall(line)
             if not matches:
                 continue
 
-            lower = line.lower()
-            price_type = Parser._infer_price_type_from_text(line)
+            left = max(0, idx - 1)
+            right = min(len(lines), idx + 2)
+            context = " | ".join(lines[left:right])
+            lower = context.lower()
+            price_type = Parser._infer_price_type_from_text(context)
+            if price_type == "delivery":
+                continue
             base_score = 0.35
             if any(word in lower for word in price_words):
                 base_score += 0.35
-            if Parser._normalize_currency(line) is not None:
+            if Parser._normalize_currency(context) is not None:
                 base_score += 0.2
-            if "%" in line:
+            if "%" in context:
                 base_score -= 0.15
-            if price_type == "delivery":
-                base_score -= 0.35
-            elif price_type == "old_price":
+            if price_type == "old_price":
                 base_score -= 0.25
 
             for raw in matches:
@@ -766,10 +981,10 @@ class Parser:
                 candidate = {
                     "status": "success",
                     "price": int(value) if float(value).is_integer() else value,
-                    "currency": Parser._normalize_currency(line),
+                    "currency": Parser._normalize_currency(context),
                     "raw_price_text": raw,
                     "price_type": price_type,
-                    "evidence_text": line[:300],
+                    "evidence_text": context[:300],
                     "confidence": min(score, 0.89),
                     "provider": "text-heuristic",
                 }
@@ -1007,6 +1222,15 @@ class Parser:
                 if not shop_folder.name.isdigit():
                     continue
                 shop_id = int(shop_folder.name)
+                product_name, shop_name, url = self._resolve_catalog_context(
+                    product_id=product_id,
+                    shop_id=shop_id,
+                )
+                self.logger.info(
+                    f"Parsing product='{product_name}' (id={product_id}) "
+                    f"from shop='{shop_name}' (id={shop_id}), "
+                    f"url='{url if url is not None else 'unknown'}'"
+                )
                 all_results.append(self._parse_single_folder(product_id, shop_id, shop_folder))
 
         return all_results

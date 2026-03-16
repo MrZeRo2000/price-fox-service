@@ -1,31 +1,38 @@
 from playwright.sync_api import sync_playwright
 import sys
+from pathlib import Path
+
+from app_logger import create_application_logger
+
 
 def verify_installation():
     """Verify Playwright is installed correctly"""
+    logger = create_application_logger(
+        data_path=str(Path(__file__).resolve().parent.parent / "data")
+    )
     try:
         with sync_playwright() as p:
-            print("✓ Playwright imported successfully")
+            logger.info("✓ Playwright imported successfully")
             
             browser = p.chromium.launch(headless=True)
-            print("✓ Chromium browser launched")
+            logger.info("✓ Chromium browser launched")
             
             page = browser.new_page()
-            print("✓ Page created")
+            logger.info("✓ Page created")
             
             page.goto("https://www.nme.com/")
-            print("✓ Navigation successful")
+            logger.info("✓ Navigation successful")
             
             title = page.title()
-            print(f"✓ Page title: {title}")
+            logger.info(f"✓ Page title: {title}")
             
             browser.close()
-            print("\n✅ All checks passed! Playwright is ready to use.")
+            logger.info("✅ All checks passed! Playwright is ready to use.")
             return True
             
     except Exception as e:
-        print(f"\n❌ Installation verification failed: {e}")
-        print("\nTry running: playwright install chromium")
+        logger.error(f"❌ Installation verification failed: {e}")
+        logger.info("Try running: playwright install chromium")
         return False
 
 if __name__ == "__main__":
