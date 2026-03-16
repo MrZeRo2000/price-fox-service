@@ -11,7 +11,9 @@ from typing import Optional
 from bs4 import BeautifulSoup
 from transformers import pipeline
 from cfg import Configuration
-from src.models import ScrapeSession
+from models import ScrapeSession
+
+DATA_SESSION_FOLDER_DATETIME_FORMAT = "%Y%m%d_%H%M%S"
 
 
 class Scraper:
@@ -144,31 +146,56 @@ class Fetcher:
         timestamp = time.strftime("%Y%m%d_%H%M%S")
         safe_name = url.replace("https://", "").replace("http://", "").replace("/", "_")[:50]
         base_name = f"{safe_name}_{timestamp}"
+        retry_intervals_seconds = [2, 5, 10]
+        max_retries = len(retry_intervals_seconds)
 
         print(f"{'=' * 70}")
         print(f"🌐 URL: {url}")
         print(f"{'=' * 70}\n")
 
         try:
-            # Navigate
-            print("Loading page...")
-            page.goto(url, wait_until="domcontentloaded", timeout=60000)
+            html_content = ""
+            text_content = ""
+            wait_result = None
+            attempt_count = 0
 
-            # Wait for content stability
-            wait_result = Fetcher.content_stable_wait(page, max_wait=120)
+            for attempt in range(max_retries + 1):
+                attempt_count = attempt + 1
+                print(f"Loading page... (attempt {attempt_count}/{max_retries + 1})")
+                page.goto(url, wait_until="domcontentloaded", timeout=60000)
 
-            # Extract content
-            print("📦 Extracting content...")
+                # Wait for content stability
+                wait_result = Fetcher.content_stable_wait(page, max_wait=120)
 
-            # 1. Full HTML
-            html_content = page.content()
+                # Extract content
+                print("📦 Extracting content...")
+                html_content = page.content()
+                text_content = page.evaluate("() => document.body.innerText")
+                text_length = len(text_content.strip())
+
+                if text_length > 0:
+                    print(f"  ✅ Extracted non-empty text ({text_length:,} chars)")
+                    break
+
+                if attempt < max_retries:
+                    retry_delay = retry_intervals_seconds[attempt]
+                    print(
+                        f"  ⚠️ Empty text content (text_length=0). "
+                        f"Retrying in {retry_delay}s..."
+                    )
+                    time.sleep(retry_delay)
+                    continue
+
+                raise RuntimeError(
+                    f"Empty text content after {max_retries} retries "
+                    f"(attempts={max_retries + 1})"
+                )
+
             html_path = f"{output_dir}/{base_name}.html"
             with open(html_path, "w", encoding="utf-8") as f:
                 f.write(html_content)
             print(f"  💾 HTML: {len(html_content):,} bytes")
 
-            # 2. Plain text
-            text_content = page.evaluate("() => document.body.innerText")
             text_path = f"{output_dir}/{base_name}.txt"
             with open(text_path, "w", encoding="utf-8") as f:
                 f.write(text_content)
@@ -184,7 +211,8 @@ class Fetcher:
                 "html_length": len(html_content),
                 "element_count": wait_result['snapshot']['elementCount'],
                 "reliability_score": wait_result['success_rate'],
-                "wait_time": wait_result['elapsed']
+                "wait_time": wait_result['elapsed'],
+                "fetch_attempts": attempt_count,
             }
 
             metadata_path = f"{output_dir}/{base_name}_metadata.json"
@@ -297,18 +325,16 @@ class Fetcher:
 
     def _prepare_output_path(self) -> Path:
         """
-        Remove previous scrape artifacts and return clean data root.
+        Create and return this run's timestamped session output root.
         """
-        data_root = Path(self.configuration.data_path)
-        data_root.mkdir(parents=True, exist_ok=True)
-
-        for item in data_root.iterdir():
-            if item.is_dir():
-                shutil.rmtree(item)
-            else:
-                item.unlink()
-
-        return data_root
+        base_data_root = Path(self.configuration.data_path)
+        base_data_root.mkdir(parents=True, exist_ok=True)
+        session_folder_name = self.scrape_session.fetch_start_datetime.strftime(
+            DATA_SESSION_FOLDER_DATETIME_FORMAT
+        )
+        session_data_root = base_data_root / session_folder_name
+        session_data_root.mkdir(parents=True, exist_ok=True)
+        return session_data_root
 
     @staticmethod
     def _product_shop_output_dir(data_root: Path, product_id: int, shop_id: int) -> Path:
@@ -396,6 +422,26 @@ class Parser:
         self.generator_task = None
         self._generator_init_error = None
         self._init_generator()
+
+    @staticmethod
+    def _is_session_folder_name(folder_name: str) -> bool:
+        try:
+            datetime.strptime(folder_name, DATA_SESSION_FOLDER_DATETIME_FORMAT)
+            return True
+        except ValueError:
+            return False
+
+    @staticmethod
+    def _resolve_data_root(base_data_root: Path) -> Path:
+        session_folders = sorted(
+            [
+                folder
+                for folder in base_data_root.iterdir()
+                if folder.is_dir() and Parser._is_session_folder_name(folder.name)
+            ],
+            key=lambda folder: folder.name,
+        )
+        return session_folders[-1] if session_folders else base_data_root
 
     def _init_generator(self):
         tasks = ("text2text-generation", "text-generation")
@@ -519,13 +565,74 @@ class Parser:
         return (
             "You extract product pricing from e-commerce page text.\n"
             "Return only one strict JSON object with fields:\n"
-            '{"price": number|null, "currency": string|null, "raw_price_text": string|null, "confidence": number}\n'
+            '{"price": number|null, "currency": string|null, "raw_price_text": string|null, '
+            '"price_type": "product|delivery|old_price|other", "evidence_text": string|null, '
+            '"confidence": number}\n'
             "Rules:\n"
             "- Pick the current selling price, not old/discount labels if possible.\n"
+            "- Prefer price figures shown in larger or visually prominent font.\n"
+            "- If two candidates are similar, choose the one that is both higher on page and larger visually.\n"
+            "- Prefer figures that include a decimal separator (dot or comma), as these are more likely real prices.\n"
+            "- Set price_type=product only for the main item selling price.\n"
+            "- Delivery/shipping/courier fee must be price_type=delivery.\n"
+            "- Old/crossed/discount-before price must be price_type=old_price.\n"
+            "- Ignore other unrelated offers.\n"
+            "- Prefer the value with the button nearby.\n"            
             "- confidence must be a number from 0 to 1.\n"
             "- If no price is found, use null values and confidence 0.\n\n"
             f"TEXT:\n{text}"
         )
+
+    @staticmethod
+    def _normalize_price_type(value: Optional[str]) -> str:
+        if not value:
+            return "other"
+        normalized = str(value).strip().lower().replace("-", "_").replace(" ", "_")
+        aliases = {
+            "product_price": "product",
+            "item": "product",
+            "item_price": "product",
+            "delivery_price": "delivery",
+            "shipping": "delivery",
+            "shipping_price": "delivery",
+            "oldprice": "old_price",
+            "old": "old_price",
+            "previous_price": "old_price",
+        }
+        mapped = aliases.get(normalized, normalized)
+        return mapped if mapped in {"product", "delivery", "old_price", "other"} else "other"
+
+    @staticmethod
+    def _infer_price_type_from_text(line_text: str) -> str:
+        lower = line_text.lower()
+        delivery_markers = (
+            "доставка",
+            "shipping",
+            "delivery",
+            "courier",
+            "кур'єр",
+            "курьер",
+            "самовивіз",
+            "самовывоз",
+        )
+        old_price_markers = (
+            "стара ціна",
+            "старая цена",
+            "old price",
+            "було",
+            "было",
+            "before",
+            "discount",
+            "знижка",
+            "скидка",
+            "акція",
+            "акция",
+        )
+        if any(marker in lower for marker in delivery_markers):
+            return "delivery"
+        if any(marker in lower for marker in old_price_markers):
+            return "old_price"
+        return "product"
 
     @staticmethod
     def _to_number(raw_value: str) -> Optional[float]:
@@ -604,6 +711,8 @@ class Parser:
                     "price": int(value) if float(value).is_integer() else value,
                     "currency": Parser._normalize_currency(raw),
                     "raw_price_text": match.group(0),
+                    "price_type": "product",
+                    "evidence_text": raw[:300],
                     "confidence": 0.92,
                     "provider": "html-heuristic",
                 }
@@ -630,6 +739,7 @@ class Parser:
                 continue
 
             lower = line.lower()
+            price_type = Parser._infer_price_type_from_text(line)
             base_score = 0.35
             if any(word in lower for word in price_words):
                 base_score += 0.35
@@ -637,6 +747,10 @@ class Parser:
                 base_score += 0.2
             if "%" in line:
                 base_score -= 0.15
+            if price_type == "delivery":
+                base_score -= 0.35
+            elif price_type == "old_price":
+                base_score -= 0.25
 
             for raw in matches:
                 value = Parser._to_number(raw)
@@ -654,6 +768,8 @@ class Parser:
                     "price": int(value) if float(value).is_integer() else value,
                     "currency": Parser._normalize_currency(line),
                     "raw_price_text": raw,
+                    "price_type": price_type,
+                    "evidence_text": line[:300],
                     "confidence": min(score, 0.89),
                     "provider": "text-heuristic",
                 }
@@ -687,6 +803,8 @@ class Parser:
             "price": parsed.get("price"),
             "currency": parsed.get("currency"),
             "raw_price_text": parsed.get("raw_price_text"),
+            "price_type": Parser._normalize_price_type(parsed.get("price_type")),
+            "evidence_text": parsed.get("evidence_text"),
             "confidence": max(0.0, min(1.0, confidence)),
             "provider": "huggingface-local",
         }
@@ -698,6 +816,8 @@ class Parser:
                 "price": None,
                 "currency": None,
                 "raw_price_text": None,
+                "price_type": "other",
+                "evidence_text": None,
                 "confidence": 0,
                 "provider": "huggingface-local",
                 "error": f"Local model initialization failed: {self._generator_init_error}",
@@ -713,6 +833,8 @@ class Parser:
                 "price": None,
                 "currency": None,
                 "raw_price_text": None,
+                "price_type": "other",
+                "evidence_text": None,
                 "confidence": 0,
                 "provider": "huggingface-local",
                 "error": "No text content to parse",
@@ -726,7 +848,7 @@ class Parser:
             try:
                 generated = self.generator(
                     prompt,
-                    max_new_tokens=160,
+                    max_new_tokens=320,
                     do_sample=False,
                     return_full_text=False,
                 )
@@ -746,17 +868,36 @@ class Parser:
             if best is None or parsed["confidence"] > best["confidence"]:
                 best = parsed
 
-            if parsed["price"] is not None and parsed["confidence"] >= 0.7:
+            if (
+                parsed["price"] is not None
+                and parsed.get("price_type") == "product"
+                and parsed["confidence"] >= 0.7
+            ):
                 return parsed
 
-        if best is not None:
+        if best is not None and best.get("price_type") == "product":
             return best
+
+        if best is not None:
+            return {
+                "status": "failed",
+                "price": None,
+                "currency": None,
+                "raw_price_text": None,
+                "price_type": best.get("price_type", "other"),
+                "evidence_text": best.get("evidence_text"),
+                "confidence": best.get("confidence", 0),
+                "provider": "huggingface-local",
+                "error": f"Model classified best candidate as non-product price ({best.get('price_type', 'other')})",
+            }
 
         return {
             "status": "failed",
             "price": None,
             "currency": None,
             "raw_price_text": None,
+            "price_type": "other",
+            "evidence_text": None,
             "confidence": 0,
             "provider": "huggingface-local",
             "error": "Model did not return parseable JSON price output",
@@ -764,8 +905,13 @@ class Parser:
         }
 
     def _parse_single_folder(self, product_id: int, shop_id: int, shop_folder: Path) -> dict:
+        parse_started_at_dt = datetime.utcnow()
+        parse_started_at = parse_started_at_dt.isoformat()
         source = self._read_text_sources(shop_folder)
         if not source["text"]:
+            parse_finished_at_dt = datetime.utcnow()
+            parse_finished_at = parse_finished_at_dt.isoformat()
+            parse_duration_seconds = (parse_finished_at_dt - parse_started_at_dt).total_seconds()
             result = {
                 "status": "failed",
                 "product_id": product_id,
@@ -773,10 +919,15 @@ class Parser:
                 "price": None,
                 "currency": None,
                 "raw_price_text": None,
+                "price_type": "other",
+                "evidence_text": None,
                 "confidence": 0,
                 "error": "Missing readable HTML/TXT content",
                 "model_id": self.model_id,
-                "parsed_at": datetime.utcnow().isoformat(),
+                "parse_started_at": parse_started_at,
+                "parse_finished_at": parse_finished_at,
+                "parse_duration_seconds": parse_duration_seconds,
+                "parsed_at": parse_finished_at,
                 "html_path": source["html_path"],
                 "txt_path": source["txt_path"],
             }
@@ -794,12 +945,14 @@ class Parser:
                 "price": None,
                 "currency": None,
                 "raw_price_text": None,
+                "price_type": "other",
+                "evidence_text": None,
                 "confidence": 0,
                 "provider": "huggingface-local",
                 "error": f"Local Hugging Face parse failed: {exc}",
             }
 
-        if extracted.get("price") is None:
+        if extracted.get("price") is None or extracted.get("price_type") != "product":
             html_candidate = self._extract_from_html_attributes(source["html_path"])
             text_candidate = self._extract_from_text_candidates(source["text"])
             fallback = None
@@ -808,9 +961,12 @@ class Parser:
             else:
                 fallback = html_candidate or text_candidate
 
-            if fallback is not None:
+            if fallback is not None and fallback.get("price_type") == "product":
                 extracted = fallback
 
+        parse_finished_at_dt = datetime.utcnow()
+        parse_finished_at = parse_finished_at_dt.isoformat()
+        parse_duration_seconds = (parse_finished_at_dt - parse_started_at_dt).total_seconds()
         result = {
             "status": extracted.get("status"),
             "product_id": product_id,
@@ -818,11 +974,16 @@ class Parser:
             "price": extracted.get("price"),
             "currency": extracted.get("currency"),
             "raw_price_text": extracted.get("raw_price_text"),
+            "price_type": extracted.get("price_type", "other"),
+            "evidence_text": extracted.get("evidence_text"),
             "confidence": extracted.get("confidence", 0),
             "provider": extracted.get("provider"),
             "error": extracted.get("error"),
             "model_id": self.model_id,
-            "parsed_at": datetime.utcnow().isoformat(),
+            "parse_started_at": parse_started_at,
+            "parse_finished_at": parse_finished_at,
+            "parse_duration_seconds": parse_duration_seconds,
+            "parsed_at": parse_finished_at,
             "html_path": source["html_path"],
             "txt_path": source["txt_path"],
         }
@@ -833,7 +994,8 @@ class Parser:
         return result
 
     def execute(self) -> list[dict]:
-        data_root = Path(self.configuration.data_path)
+        base_data_root = Path(self.configuration.data_path)
+        data_root = self._resolve_data_root(base_data_root)
         all_results = []
 
         for product_folder in sorted([p for p in data_root.iterdir() if p.is_dir()]):
