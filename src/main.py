@@ -4,7 +4,9 @@ import sys
 from pathlib import Path
 
 from app_logger import create_application_logger
+from collector import ScrapeDetailedCollector
 from cfg import Configuration
+from repository import ScrapeDetailedRepository
 from scraper import Parser, Scraper
 
 
@@ -37,11 +39,59 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Skip fetching and parse only the latest fetched session folder.",
     )
+    parser.add_argument(
+        "--collect-only",
+        action="store_true",
+        help="Skip fetch/parse and persist latest scrape session into scrape_detailed table.",
+    )
     return parser
 
 
+def _persist_latest_scrape_results(configuration: Configuration) -> dict:
+    logger = configuration.logger
+    if configuration.product_catalog_db_path is None:
+        logger.warning(
+            "Skipping scrape result persistence because product catalog DB path is not configured."
+        )
+        return {
+            "session_date": None,
+            "deleted_rows": 0,
+            "saved_rows": 0,
+        }
+
+    scrape_detailed_collector = ScrapeDetailedCollector(
+        data_path=configuration.data_path,
+        logger=logger,
+    )
+    session_date, rows = scrape_detailed_collector.collect_latest_session_rows()
+    if session_date is None:
+        logger.info("Skipping scrape result persistence because no scrape session was found.")
+        return {
+            "session_date": None,
+            "deleted_rows": 0,
+            "saved_rows": 0,
+        }
+
+    scrape_detailed_repository = ScrapeDetailedRepository(
+        db_path=configuration.product_catalog_db_path
+    )
+    persisted_results = scrape_detailed_repository.replace_session_rows(
+        session_date=session_date,
+        rows=rows,
+    )
+    logger.info(
+        f"Persisted scrape session_date={persisted_results['session_date']} "
+        f"(deleted={persisted_results['deleted_rows']}, saved={persisted_results['saved_rows']})."
+    )
+    return persisted_results
+
+
 def main() -> int:
-    args = _build_parser().parse_args()
+    parser = _build_parser()
+    args = parser.parse_args()
+    if args.parse_only and args.collect_only:
+        parser.error("--parse-only and --collect-only cannot be used together.")
+
     resolved_data_path = (
         args.data_path
         if args.data_path is not None
@@ -56,7 +106,14 @@ def main() -> int:
             db_path=args.db_path,
         )
         logger = configuration.logger
-        if args.parse_only:
+        if args.collect_only:
+            persisted_results = _persist_latest_scrape_results(configuration)
+            result = {
+                "fetch_results": [],
+                "parse_results": [],
+                "collect_results": persisted_results,
+            }
+        elif args.parse_only:
             parser = Parser(configuration)
             parse_results = parser.execute()
             result = {
@@ -74,13 +131,17 @@ def main() -> int:
     parse_results = result.get("parse_results", [])
     successful_parses = sum(1 for item in parse_results if item.get("status") == "success")
 
-    if args.parse_only:
+    if args.collect_only:
+        logger.info("Collect-only run completed.")
+    elif args.parse_only:
         logger.info("Parse-only run completed.")
     else:
         logger.info("Scraper run completed.")
     logger.info(f"Fetched records: {len(fetch_results)}")
     logger.info(f"Parsed records: {len(parse_results)}")
     logger.info(f"Successful parses: {successful_parses}")
+    if not args.collect_only:
+        _persist_latest_scrape_results(configuration)
 
     session_root = None
     if fetch_results:

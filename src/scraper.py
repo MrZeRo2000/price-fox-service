@@ -341,10 +341,12 @@ class Fetcher:
         """
         base_data_root = Path(self.configuration.data_path)
         base_data_root.mkdir(parents=True, exist_ok=True)
+        scrape_root = base_data_root / "scrape"
+        scrape_root.mkdir(parents=True, exist_ok=True)
         session_folder_name = self.scrape_session.fetch_start_datetime.strftime(
             DATA_SESSION_FOLDER_DATETIME_FORMAT
         )
-        session_data_root = base_data_root / session_folder_name
+        session_data_root = scrape_root / session_folder_name
         session_data_root.mkdir(parents=True, exist_ok=True)
         return session_data_root
 
@@ -504,15 +506,23 @@ class Parser:
 
     @staticmethod
     def _resolve_data_root(base_data_root: Path) -> Path:
-        session_folders = sorted(
-            [
-                folder
-                for folder in base_data_root.iterdir()
-                if folder.is_dir() and Parser._is_session_folder_name(folder.name)
-            ],
-            key=lambda folder: folder.name,
-        )
-        return session_folders[-1] if session_folders else base_data_root
+        # Prefer the new fetch layout (`data/scrape/<timestamp>`), but keep
+        # backward compatibility with the older (`data/<timestamp>`) structure.
+        candidate_roots = [base_data_root / "scrape", base_data_root]
+        for root in candidate_roots:
+            if not root.exists():
+                continue
+            session_folders = sorted(
+                [
+                    folder
+                    for folder in root.iterdir()
+                    if folder.is_dir() and Parser._is_session_folder_name(folder.name)
+                ],
+                key=lambda folder: folder.name,
+            )
+            if session_folders:
+                return session_folders[-1]
+        return base_data_root
 
     def _resolve_catalog_context(self, product_id: int, shop_id: int) -> tuple[str, str, Optional[str]]:
         product_name = self._product_name_by_id.get(product_id, f"unknown_product_{product_id}")
