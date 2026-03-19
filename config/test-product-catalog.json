@@ -2,43 +2,24 @@
   "shops": [
     {
       "id": 1,
-      "name": "eva"
-    },
-    {
-      "id": 2,
-      "name": "ATB"
+      "name": "test"
     }
   ],
   "categories": [
     {
       "id": 1,
-      "name": "Хозтовары"
-    },
-    {
-      "id": 2,
-      "name": "Продукты"
+      "name": "test"
     }
   ],
   "products": [
     {
       "id": 1,
-      "name": "Ariel для белого",
+      "name": "test",
       "category_ids": [1],
       "urls": [
         {
           "shop_id": 1,
-          "url": "https://eva.ua/pr360698/"
-        }
-      ]
-    },
-    {
-      "id": 4,
-      "name": "Фета",
-      "category_ids": [2],
-      "urls": [
-        {
-          "shop_id": 2,
-          "url": "https://www.atbmarket.com/ru/product/sir-makij-180-g-premialle-felata-45-pup"
+          "url": "https://epicentrk.ua/shop/pralnyi-poroshok-dlia-mashynnoho-ta-ruchnoho-prannia-ariel-akva-pudra-color-3-kh.html"
         }
       ]
     }

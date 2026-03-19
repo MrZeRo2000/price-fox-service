@@ -673,7 +673,8 @@ class Parser:
             '"confidence": number}\n'
             "Rules:\n"
             "- Pick the current selling price, not old/discount labels if possible.\n"
-            "- If two candidates are similar, choose shown in larger or visually prominent font and the one that is both higher on page and larger visually.\n"
+            "- Ignore numbers starting with '-', numbers ending with %.\n"
+            "- If two candidates are similar, choose shown in larger or visually prominent font and the one that is both higher on page and larger visually.\n"            
             "- Ignore other unrelated offers.\n"            
             "- confidence must be a number from 0 to 1.\n"
             "- If no price is found, use null values and confidence 0.\n\n"
@@ -782,6 +783,9 @@ class Parser:
             .replace(",", ".")
             .strip()
         )
+        # Ignore discount/offset-style negative values (e.g. "-240.30").
+        if cleaned.startswith(("-", "−", "–")):
+            return None
         filtered = re.sub(r"[^0-9.]", "", cleaned)
         if not filtered or filtered.count(".") > 1:
             return None
@@ -792,6 +796,20 @@ class Parser:
         if value <= 0 or value > 1_000_000:
             return None
         return value
+
+    @staticmethod
+    def _is_negative_prefixed(text: str, match_start: int) -> bool:
+        """
+        Detect minus-prefixed numeric token even with separators, e.g. "- | 240.30".
+        """
+        i = match_start - 1
+        while i >= 0 and text[i].isspace():
+            i -= 1
+        while i >= 0 and text[i] in "|:/;":
+            i -= 1
+            while i >= 0 and text[i].isspace():
+                i -= 1
+        return i >= 0 and text[i] in ("-", "−", "–")
 
     @staticmethod
     def _normalize_currency(text: str) -> Optional[str]:
@@ -837,7 +855,7 @@ class Parser:
         )
 
         best = None
-        number_pattern = re.compile(r"\d{1,6}(?:[ \u00A0]?\d{3})*(?:[.,]\d{1,2})?")
+        number_pattern = re.compile(r"[-−–]?\d{1,6}(?:[ \u00A0]?\d{3})*(?:[.,]\d{1,2})?")
 
         # Prefer explicit structured product metadata when present.
         for script in soup.select("script[type='application/ld+json']"):
@@ -884,7 +902,7 @@ class Parser:
                 raw = " ".join(
                     [node.get(key, "") for key in attribute_keys if node.get(key, "")]
                 ) or node.get_text(" ", strip=True)
-                matches = number_pattern.findall(raw)
+                matches = list(number_pattern.finditer(raw))
                 if not matches:
                     continue
 
@@ -915,7 +933,12 @@ class Parser:
                 if context_type == "delivery":
                     continue
 
-                for raw_number in matches:
+                for match in matches:
+                    raw_number = match.group(0).strip()
+                    if Parser._is_negative_prefixed(raw, match.start()):
+                        continue
+                    if raw_number.startswith(("-", "−", "–")):
+                        continue
                     value = Parser._to_number(raw_number)
                     if value is None:
                         continue
@@ -952,12 +975,17 @@ class Parser:
             return None
 
         price_words = ("ціна", "цена", "price", "варт", "грн", "uah", "₴", "sale", "акц")
-        number_pattern = re.compile(r"\d{1,6}(?:[ \u00A0]?\d{3})*(?:[.,]\d{1,2})?")
+        number_pattern = re.compile(r"[-−–]?\d{1,6}(?:[ \u00A0]?\d{3})*(?:[.,]\d{1,2})?")
         best = None
 
         for idx, line in enumerate(lines):
-            matches = number_pattern.findall(line)
+            matches = list(number_pattern.finditer(line))
             if not matches:
+                continue
+            prev_line = lines[idx - 1].strip() if idx > 0 else ""
+            if prev_line in {"-", "−", "–"}:
+                # Discount deltas are often rendered as a standalone "-" line
+                # followed by the numeric amount on the next line.
                 continue
 
             left = max(0, idx - 1)
@@ -977,7 +1005,12 @@ class Parser:
             if price_type == "old_price":
                 base_score -= 0.25
 
-            for raw in matches:
+            for match in matches:
+                raw = match.group(0).strip()
+                if Parser._is_negative_prefixed(line, match.start()):
+                    continue
+                if raw.startswith(("-", "−", "–")):
+                    continue
                 value = Parser._to_number(raw)
                 if value is None:
                     continue
