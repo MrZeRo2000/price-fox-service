@@ -4,12 +4,9 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
+from application import persist_latest_scrape_results, run_pipeline
 from app_logger import create_application_logger
-from collector import ScrapeDetailedCollector
 from cfg import Configuration
-from processor import ScrapeConsolidatedProcessor
-from repository import ScrapeDetailedRepository
-from scraper import Parser, Scraper
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -49,62 +46,6 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _persist_latest_scrape_results(configuration: Configuration) -> dict:
-    logger = configuration.logger
-    if configuration.product_catalog_db_path is None:
-        logger.warning(
-            "Skipping scrape result persistence because product catalog DB path is not configured."
-        )
-        return {
-            "session_date": None,
-            "deleted_rows": 0,
-            "saved_rows": 0,
-            "consolidated": None,
-        }
-
-    scrape_detailed_collector = ScrapeDetailedCollector(
-        data_path=configuration.data_path,
-        logger=logger,
-    )
-    session_date, rows = scrape_detailed_collector.collect_latest_session_rows()
-    if session_date is None:
-        logger.info("Skipping scrape result persistence because no scrape session was found.")
-        return {
-            "session_date": None,
-            "deleted_rows": 0,
-            "saved_rows": 0,
-            "consolidated": None,
-        }
-
-    scrape_detailed_repository = ScrapeDetailedRepository(
-        db_path=configuration.product_catalog_db_path
-    )
-    persisted_results = scrape_detailed_repository.replace_session_rows(
-        session_date=session_date,
-        rows=rows,
-    )
-    scrape_consolidated_processor = ScrapeConsolidatedProcessor(
-        db_path=configuration.product_catalog_db_path
-    )
-    consolidated_results = scrape_consolidated_processor.replace_for_session(
-        session_date=session_date
-    )
-    logger.info(
-        f"Persisted scrape session_date={persisted_results['session_date']} "
-        f"(deleted={persisted_results['deleted_rows']}, saved={persisted_results['saved_rows']})."
-    )
-    logger.info(
-        f"Refreshed scrape_consolidated for session_date={consolidated_results['session_date']} "
-        f"(deleted={consolidated_results['deleted_rows']}, saved={consolidated_results['saved_rows']})."
-    )
-    return {
-        "session_date": persisted_results["session_date"],
-        "deleted_rows": persisted_results["deleted_rows"],
-        "saved_rows": persisted_results["saved_rows"],
-        "consolidated": consolidated_results,
-    }
-
-
 def main() -> int:
     session_start_datetime = datetime.now()
     parser = _build_parser()
@@ -127,22 +68,13 @@ def main() -> int:
         )
         logger = configuration.logger
         if args.collect_only:
-            persisted_results = _persist_latest_scrape_results(configuration)
-            result = {
-                "fetch_results": [],
-                "parse_results": [],
-                "collect_results": persisted_results,
-            }
-        elif args.parse_only:
-            parser = Parser(configuration)
-            parse_results = parser.execute()
-            result = {
-                "fetch_results": [],
-                "parse_results": parse_results,
-            }
+            result = run_pipeline(
+                configuration,
+                parse_only=args.parse_only,
+                collect_only=args.collect_only,
+            )
         else:
-            scraper = Scraper(configuration)
-            result = scraper.execute()
+            result = run_pipeline(configuration, parse_only=args.parse_only)
     except Exception as exc:
         logger.error(f"Scraper failed: {exc}")
         return 1
@@ -161,7 +93,7 @@ def main() -> int:
     logger.info(f"Parsed records: {len(parse_results)}")
     logger.info(f"Successful parses: {successful_parses}")
     if not args.collect_only:
-        _persist_latest_scrape_results(configuration)
+        persist_latest_scrape_results(configuration)
 
     session_root = None
     if fetch_results:

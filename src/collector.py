@@ -2,14 +2,11 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime
 from decimal import Decimal, ROUND_HALF_UP
 from pathlib import Path
 from typing import Optional
 
-
-DATA_SESSION_FOLDER_DATETIME_FORMAT = "%Y%m%d_%H%M%S"
-
+from session import resolve_latest_scrape_session_folder
 
 class ScrapeDetailedCollector:
     """Collect scrape_detailed rows from latest scrape session folder."""
@@ -21,28 +18,8 @@ class ScrapeDetailedCollector:
         if not self._data_path.exists():
             raise ValueError(f"Data path does not exist: {self._data_path}")
 
-    @staticmethod
-    def _is_session_folder_name(folder_name: str) -> bool:
-        try:
-            datetime.strptime(folder_name, DATA_SESSION_FOLDER_DATETIME_FORMAT)
-            return True
-        except ValueError:
-            return False
-
     def _resolve_latest_session_folder(self) -> Optional[Path]:
-        scrape_root = self._data_path / "scrape"
-        if not scrape_root.exists():
-            return None
-
-        session_folders = sorted(
-            [
-                folder
-                for folder in scrape_root.iterdir()
-                if folder.is_dir() and self._is_session_folder_name(folder.name)
-            ],
-            key=lambda folder: folder.name,
-        )
-        return session_folders[-1] if session_folders else None
+        return resolve_latest_scrape_session_folder(self._data_path)
 
     @staticmethod
     def _load_json(file_path: Path) -> dict:

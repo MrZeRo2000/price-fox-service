@@ -1,18 +1,22 @@
 import os
-from pathlib import Path
 
 from app_logger import create_application_logger
+from config.catalog_loader import load_catalog_from_database, load_catalog_from_json
+from config.settings import resolve_configuration_settings
 from models import CatalogData
-from repository import ProductCatalogRepository
 
 
 class Configuration:
     """Class for configuration"""
     def __init__(self, data_path: str = None, config_path: str = None, db_path: str = None):
-        data_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "../data/")) if data_path is None else data_path
-        default_product_catalog_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "../config/product-catalog.json"))
-        product_catalog_path = default_product_catalog_path if config_path is None else config_path
-        product_catalog_db_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "../data/db/product-catalog.sqlite")) if db_path is None else db_path
+        settings = resolve_configuration_settings(
+            data_path=data_path,
+            config_path=config_path,
+            db_path=db_path,
+        )
+        data_path = settings.data_path
+        product_catalog_path = settings.product_catalog_path
+        product_catalog_db_path = settings.product_catalog_db_path
 
         if not os.path.exists(data_path):
             raise ValueError(f"Data path {data_path} does not exist")
@@ -29,14 +33,11 @@ class Configuration:
 
     @staticmethod
     def load_configuration_from_json(product_catalog_path: str) -> CatalogData:
-        if not os.path.exists(product_catalog_path):
-            raise ValueError(f"Product catalog path {product_catalog_path} does not exist")
-        return CatalogData.model_validate_json(Path(product_catalog_path).read_text(encoding="utf-8"))
+        return load_catalog_from_json(product_catalog_path)
 
     @staticmethod
     def load_configuration_from_database(product_catalog_db_path: str) -> CatalogData:
-        repository = ProductCatalogRepository(product_catalog_db_path)
-        return repository.load_catalog_data()
+        return load_catalog_from_database(product_catalog_db_path)
 
     @property
     def data_path(self):
