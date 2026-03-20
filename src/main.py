@@ -1,11 +1,13 @@
 import argparse
 import json
 import sys
+from datetime import datetime
 from pathlib import Path
 
 from app_logger import create_application_logger
 from collector import ScrapeDetailedCollector
 from cfg import Configuration
+from processor import ScrapeConsolidatedProcessor
 from repository import ScrapeDetailedRepository
 from scraper import Parser, Scraper
 
@@ -57,6 +59,7 @@ def _persist_latest_scrape_results(configuration: Configuration) -> dict:
             "session_date": None,
             "deleted_rows": 0,
             "saved_rows": 0,
+            "consolidated": None,
         }
 
     scrape_detailed_collector = ScrapeDetailedCollector(
@@ -70,6 +73,7 @@ def _persist_latest_scrape_results(configuration: Configuration) -> dict:
             "session_date": None,
             "deleted_rows": 0,
             "saved_rows": 0,
+            "consolidated": None,
         }
 
     scrape_detailed_repository = ScrapeDetailedRepository(
@@ -79,14 +83,30 @@ def _persist_latest_scrape_results(configuration: Configuration) -> dict:
         session_date=session_date,
         rows=rows,
     )
+    scrape_consolidated_processor = ScrapeConsolidatedProcessor(
+        db_path=configuration.product_catalog_db_path
+    )
+    consolidated_results = scrape_consolidated_processor.replace_for_session(
+        session_date=session_date
+    )
     logger.info(
         f"Persisted scrape session_date={persisted_results['session_date']} "
         f"(deleted={persisted_results['deleted_rows']}, saved={persisted_results['saved_rows']})."
     )
-    return persisted_results
+    logger.info(
+        f"Refreshed scrape_consolidated for session_date={consolidated_results['session_date']} "
+        f"(deleted={consolidated_results['deleted_rows']}, saved={consolidated_results['saved_rows']})."
+    )
+    return {
+        "session_date": persisted_results["session_date"],
+        "deleted_rows": persisted_results["deleted_rows"],
+        "saved_rows": persisted_results["saved_rows"],
+        "consolidated": consolidated_results,
+    }
 
 
 def main() -> int:
+    session_start_datetime = datetime.now()
     parser = _build_parser()
     args = parser.parse_args()
     if args.parse_only and args.collect_only:
@@ -153,6 +173,16 @@ def main() -> int:
 
     if args.print_json:
         logger.info(json.dumps(result, indent=2, ensure_ascii=False))
+
+    session_end_datetime = datetime.now()
+    session_duration_seconds = int(
+        (session_end_datetime - session_start_datetime).total_seconds()
+    )
+    duration_minutes = session_duration_seconds // 60
+    duration_seconds = session_duration_seconds % 60
+    logger.info(f"Session start time: {session_start_datetime.isoformat(timespec='seconds')}")
+    logger.info(f"Session end time: {session_end_datetime.isoformat(timespec='seconds')}")
+    logger.info(f"Session duration: {duration_minutes}m {duration_seconds}s")
 
     return 0
 

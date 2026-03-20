@@ -9,6 +9,7 @@ import logging
 import os
 from datetime import datetime
 from typing import Optional
+from urllib.parse import urlparse
 
 from bs4 import BeautifulSoup
 from huggingface_hub import snapshot_download
@@ -53,10 +54,18 @@ class Fetcher:
         start_time = time.time()
         checks = {}
 
+        def remaining_ms() -> int:
+            remaining_seconds = max_wait - (time.time() - start_time)
+            return max(0, int(remaining_seconds * 1000))
+
         # Wait for network idle multiple times
         for attempt in range(3):
+            timeout_ms = min(15000, remaining_ms())
+            if timeout_ms <= 0:
+                checks[f'networkidle_{attempt}'] = False
+                break
             try:
-                page.wait_for_load_state("networkidle", timeout=30000)
+                page.wait_for_load_state("networkidle", timeout=timeout_ms)
                 checks[f'networkidle_{attempt}'] = True
                 active_logger.info(f"  ✓ Network idle (check {attempt + 1}/3)")
                 time.sleep(2)
@@ -70,6 +79,8 @@ class Fetcher:
         last_hash = ""
 
         for i in range(50):
+            if remaining_ms() <= 0:
+                break
             content_signature = page.evaluate("""
                 () => {
                     const text = document.body.innerText;
@@ -91,12 +102,19 @@ class Fetcher:
                 stable_count = 0
 
             last_hash = current_hash
+            if remaining_ms() <= 0:
+                break
             time.sleep(1)
         else:
             checks['content_stable'] = False
 
+        if 'content_stable' not in checks:
+            checks['content_stable'] = False
+
         # Scroll to trigger lazy content
         for pos in [0.33, 0.66, 1.0, 0]:
+            if remaining_ms() <= 0:
+                break
             page.evaluate(f"""
                 () => {{
                     const height = Math.max(
@@ -108,14 +126,17 @@ class Fetcher:
             """)
             time.sleep(1.5)
             try:
-                page.wait_for_load_state("networkidle", timeout=8000)
+                timeout_ms = min(4000, remaining_ms())
+                if timeout_ms > 0:
+                    page.wait_for_load_state("networkidle", timeout=timeout_ms)
             except:
                 pass
 
         checks['lazy_triggered'] = True
 
         # Final verification
-        time.sleep(5)
+        if remaining_ms() > 0:
+            time.sleep(min(2, remaining_ms() / 1000))
 
         snapshot = page.evaluate("""
             () => {
@@ -131,6 +152,8 @@ class Fetcher:
         elapsed = time.time() - start_time
         passed = sum(1 for v in checks.values() if v)
         total = len(checks)
+
+        checks["timed_out"] = elapsed >= max_wait
 
         active_logger.info(f"  ⏱️  Wait time: {elapsed:.1f}s")
         active_logger.info(f"  ✅ Reliability: {passed}/{total} ({passed / total * 100:.1f}%)")
@@ -163,20 +186,72 @@ class Fetcher:
             text_content = ""
             wait_result = None
             attempt_count = 0
+            started_at = time.time()
+            max_url_runtime_seconds = 180
 
             for attempt in range(max_retries + 1):
+                if time.time() - started_at > max_url_runtime_seconds:
+                    raise RuntimeError(
+                        f"URL processing timeout exceeded {max_url_runtime_seconds}s"
+                    )
                 attempt_count = attempt + 1
                 active_logger.info(f"Loading page... (attempt {attempt_count}/{max_retries + 1})")
                 page.goto(url, wait_until="domcontentloaded", timeout=60000)
+                consent_accepted = Fetcher._try_accept_cookie_consent(page, logger=active_logger)
+                if not consent_accepted:
+                    consent_accepted = Fetcher._disable_cookie_dialog_overlay(
+                        page, logger=active_logger
+                    )
+                if consent_accepted:
+                    # Some anti-bot setups release full content only after consent is stored.
+                    try:
+                        page.wait_for_load_state("networkidle", timeout=15000)
+                    except Exception:
+                        pass
+                    page.goto(url, wait_until="domcontentloaded", timeout=60000)
+
+                # Quick pre-check to avoid long waits on known blocked pages.
+                quick_html = page.content()
+                quick_text = page.evaluate("() => document.body.innerText")
+                if Fetcher._has_access_denied_content(quick_text, quick_html):
+                    if attempt < max_retries:
+                        retry_delay = retry_intervals_seconds[attempt]
+                        active_logger.warning(
+                            "  ⚠️ Access denied detected immediately after navigation. "
+                            f"Retrying in {retry_delay}s..."
+                        )
+                        time.sleep(retry_delay)
+                        continue
+                    raise RuntimeError(
+                        f"Access denied content persisted after {max_retries} retries "
+                        f"(attempts={max_retries + 1})"
+                    )
 
                 # Wait for content stability
-                wait_result = Fetcher.content_stable_wait(page, max_wait=120, logger=active_logger)
+                wait_result = Fetcher.content_stable_wait(page, max_wait=45, logger=active_logger)
 
                 # Extract content
                 active_logger.info("📦 Extracting content...")
                 html_content = page.content()
                 text_content = page.evaluate("() => document.body.innerText")
                 text_length = len(text_content.strip())
+
+                is_access_denied = Fetcher._has_access_denied_content(text_content, html_content)
+                if is_access_denied:
+                    if attempt < max_retries:
+                        retry_delay = retry_intervals_seconds[attempt]
+                        active_logger.warning(
+                            "  ⚠️ Access denied content detected. "
+                            f"Retrying in {retry_delay}s after cookie-consent attempt..."
+                        )
+                        Fetcher._try_accept_cookie_consent(page, logger=active_logger)
+                        Fetcher._disable_cookie_dialog_overlay(page, logger=active_logger)
+                        time.sleep(retry_delay)
+                        continue
+                    raise RuntimeError(
+                        f"Access denied content persisted after {max_retries} retries "
+                        f"(attempts={max_retries + 1})"
+                    )
 
                 if text_length > 0:
                     active_logger.info(f"  ✅ Extracted non-empty text ({text_length:,} chars)")
@@ -245,6 +320,238 @@ class Fetcher:
             }
 
     @staticmethod
+    def _has_access_denied_content(text_content: str, html_content: str) -> bool:
+        combined = f"{text_content}\n{html_content}".lower()
+        denial_markers = (
+            "you don't have permission to access",
+            "access denied",
+            "error 403",
+            "forbidden",
+            "request blocked",
+            "blocked by security policy",
+        )
+        return any(marker in combined for marker in denial_markers)
+
+    @staticmethod
+    def _try_accept_cookie_consent(page, logger: Optional[logging.Logger] = None) -> bool:
+        active_logger = logger or logging.getLogger("price_fox")
+        active_logger.info("🍪 Checking for cookie consent dialog...")
+
+        button_text_candidates = [
+            "Accept All Cookies",
+            "Accept all",
+            "Accept",
+            "I agree",
+            "Allow all",
+            "Прийняти всі",
+            "Прийняти все",
+            "Погоджуюсь",
+            "Согласен",
+            "Принять все",
+            "Прийняти",
+        ]
+        css_candidates = [
+            "#onetrust-accept-btn-handler",
+            "button#onetrust-accept-btn-handler",
+            "button[aria-label*='accept' i]",
+            "button[id*='accept' i]",
+            "button[class*='accept' i]",
+            "button[data-testid*='accept' i]",
+            "button[data-test*='accept' i]",
+            "[role='button'][aria-label*='accept' i]",
+            "button:has-text('Accept')",
+            "button:has-text('Прийняти')",
+            "button:has-text('Согласен')",
+        ]
+
+        for selector in css_candidates:
+            try:
+                locator = page.locator(selector).first
+                if locator.is_visible(timeout=1000):
+                    locator.click(timeout=3000)
+                    time.sleep(1.5)
+                    active_logger.info(f"  ✓ Accepted cookies via selector: {selector}")
+                    return True
+            except Exception:
+                continue
+
+        for text in button_text_candidates:
+            try:
+                locator = page.get_by_role("button", name=text, exact=False).first
+                if locator.is_visible(timeout=1000):
+                    locator.click(timeout=3000)
+                    time.sleep(1.5)
+                    active_logger.info(f"  ✓ Accepted cookies via button text: {text}")
+                    return True
+            except Exception:
+                continue
+
+        # Some consent managers render inside iframes.
+        for frame in page.frames:
+            for selector in css_candidates:
+                try:
+                    locator = frame.locator(selector).first
+                    if locator.is_visible(timeout=1000):
+                        locator.click(timeout=3000)
+                        time.sleep(1.5)
+                        active_logger.info(
+                            f"  ✓ Accepted cookies via iframe selector: {selector}"
+                        )
+                        return True
+                except Exception:
+                    continue
+            for text in button_text_candidates:
+                try:
+                    locator = frame.get_by_role("button", name=text, exact=False).first
+                    if locator.is_visible(timeout=1000):
+                        locator.click(timeout=3000)
+                        time.sleep(1.5)
+                        active_logger.info(
+                            f"  ✓ Accepted cookies via iframe button text: {text}"
+                        )
+                        return True
+                except Exception:
+                    continue
+
+        active_logger.info("  ℹ️ Cookie consent button was not found.")
+        return False
+
+    @staticmethod
+    def _disable_cookie_dialog_overlay(page, logger: Optional[logging.Logger] = None) -> bool:
+        active_logger = logger or logging.getLogger("price_fox")
+
+        # Fallback when consent dialog has non-clickable markup; remove OneTrust nodes
+        # and set the common "alert closed" cookie to avoid immediate re-render.
+        try:
+            script = """
+                () => {
+                    let removed = false;
+                    const selectors = [
+                        "#onetrust-banner-sdk",
+                        "#onetrust-consent-sdk",
+                        "#onetrust-pc-sdk",
+                        ".onetrust-pc-dark-filter",
+                        ".ot-sdk-container",
+                        "[id*='onetrust' i]",
+                        "[class*='onetrust' i]",
+                        "[id*='ot-sdk' i]",
+                        "[class*='ot-sdk' i]",
+                    ];
+                    for (const selector of selectors) {
+                        for (const el of document.querySelectorAll(selector)) {
+                            el.remove();
+                            removed = true;
+                        }
+                    }
+
+                    const now = new Date().toUTCString();
+                    document.cookie = `OptanonAlertBoxClosed=${now}; path=/; max-age=31536000`;
+                    document.body.style.overflow = "auto";
+                    document.documentElement.style.overflow = "auto";
+                    return removed;
+                }
+                """
+
+            try:
+                removed_any = bool(page.evaluate(script))
+            except Exception:
+                removed_any = False
+
+            for frame in page.frames:
+                try:
+                    frame_removed = bool(frame.evaluate(script))
+                    removed_any = removed_any or frame_removed
+                except Exception:
+                    continue
+
+            if removed_any:
+                active_logger.info("  ✓ Disabled OneTrust cookie dialog overlay.")
+            return bool(removed_any)
+        except Exception:
+            return False
+
+    @staticmethod
+    def _needs_antibot_fallback(url: str, result: dict) -> bool:
+        if result.get("status") != "failed":
+            return False
+        error = str(result.get("error", "")).lower()
+        host = (urlparse(url).hostname or "").lower()
+        is_access_error = (
+            "access denied" in error
+            or "you don't have permission" in error
+            or "forbidden" in error
+            or "blocked" in error
+        )
+        return is_access_error or host.endswith("watsons.ua")
+
+    @staticmethod
+    def _run_antibot_fallback_fetch(
+        playwright,
+        url: str,
+        output_dir: str,
+        browser_session_id: str,
+        logger: Optional[logging.Logger] = None,
+    ) -> dict:
+        active_logger = logger or logging.getLogger("price_fox")
+        active_logger.warning("🛡️ Running anti-bot fallback browser session...")
+        antibot_headless = os.environ.get("PRICE_FOX_ANTIBOT_HEADLESS", "0").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+        }
+
+        browser = None
+        context = None
+        try:
+            browser = playwright.chromium.launch(
+                headless=antibot_headless,
+                args=[
+                    "--disable-blink-features=AutomationControlled",
+                    "--disable-dev-shm-usage",
+                ],
+            )
+            context = browser.new_context(
+                viewport={"width": 1366, "height": 768},
+                locale="uk-UA",
+                timezone_id="Europe/Kyiv",
+                user_agent=(
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/123.0.0.0 Safari/537.36"
+                ),
+            )
+            page = context.new_page()
+            page.add_init_script(
+                "Object.defineProperty(navigator, 'webdriver', {get: () => undefined});"
+            )
+            page.set_default_timeout(90000)
+            return Fetcher.save_single_page(
+                page=page,
+                url=url,
+                output_dir=output_dir,
+                browser_session_id=f"{browser_session_id}_antibot",
+                logger=active_logger,
+            )
+        except Exception as exc:
+            active_logger.error(f"  ❌ Anti-bot fallback failed: {exc}")
+            return {
+                "url": url,
+                "status": "failed",
+                "error": f"Anti-bot fallback failed: {exc}",
+            }
+        finally:
+            try:
+                if context is not None:
+                    context.close()
+            except Exception:
+                pass
+            try:
+                if browser is not None:
+                    browser.close()
+            except Exception:
+                pass
+
+    @staticmethod
     def batch_scrape_optimized(urls, output_dir="batch_scrapes", delay_between_pages=3, logger: Optional[logging.Logger] = None):
         """
         OPTIMIZED: Reuses browser instance for all URLs
@@ -294,6 +601,22 @@ class Fetcher:
                     browser_session_id,
                     logger=active_logger,
                 )
+                if Fetcher._needs_antibot_fallback(url, result):
+                    active_logger.warning(
+                        "  ⚠️ Primary fetch failed/blocked; trying anti-bot fallback."
+                    )
+                    fallback_result = Fetcher._run_antibot_fallback_fetch(
+                        playwright=p,
+                        url=url,
+                        output_dir=output_dir,
+                        browser_session_id=browser_session_id,
+                        logger=active_logger,
+                    )
+                    if fallback_result.get("status") == "success":
+                        active_logger.info("  ✓ Anti-bot fallback succeeded.")
+                        result = fallback_result
+                    else:
+                        active_logger.warning("  ⚠️ Anti-bot fallback did not resolve blocking.")
                 results.append(result)
 
                 # Delay between pages (be nice to servers)
@@ -480,6 +803,17 @@ class Parser:
         if self._is_model_cached_locally():
             self.logger.info(f"Model '{self.model_id}' found in local HF cache.")
             return
+
+        allow_download = os.environ.get("PRICE_FOX_ALLOW_MODEL_DOWNLOAD", "0").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+        }
+        if not allow_download:
+            raise RuntimeError(
+                f"Model '{self.model_id}' is not present in local cache and automatic download is disabled. "
+                "Set PRICE_FOX_ALLOW_MODEL_DOWNLOAD=1 to enable one-time model download."
+            )
 
         self.logger.warning(
             f"Model '{self.model_id}' not found in local HF cache. Starting one-time download."
@@ -825,6 +1159,27 @@ class Parser:
         return None
 
     @staticmethod
+    def _has_adjacent_currency(text: str, match_start: int, match_end: int) -> bool:
+        left = text[max(0, match_start - 8):match_start]
+        right = text[match_end:min(len(text), match_end + 12)]
+        probe = f"{left} {right}".lower()
+        return bool(
+            re.search(r"(грн|₴|uah|usd|eur|pln|zł|\$|€)", probe, flags=re.IGNORECASE)
+        )
+
+    @staticmethod
+    def _is_measurement_amount(text: str, match_start: int, match_end: int) -> bool:
+        # Ignore package-size numbers like "100 мл", "50 g", etc.
+        right = text[match_end:min(len(text), match_end + 14)].lower()
+        return bool(
+            re.search(
+                r"^\s*(мл|ml|л|l|г|гр|g|kg|кг|oz|унц|шт|pcs|табл|капсул|pack)\b",
+                right,
+                flags=re.IGNORECASE,
+            )
+        )
+
+    @staticmethod
     def _extract_from_html_attributes(html_path: Optional[str]) -> Optional[dict]:
         if not html_path:
             return None
@@ -939,6 +1294,8 @@ class Parser:
                         continue
                     if raw_number.startswith(("-", "−", "–")):
                         continue
+                    if Parser._is_measurement_amount(raw, match.start(), match.end()):
+                        continue
                     value = Parser._to_number(raw_number)
                     if value is None:
                         continue
@@ -949,6 +1306,8 @@ class Parser:
                         confidence += 0.08
                     if any(marker in lower_context for marker in Parser._product_markers()):
                         confidence += 0.05
+                    if Parser._has_adjacent_currency(raw, match.start(), match.end()):
+                        confidence += 0.15
                     if context_type == "old_price":
                         confidence -= 0.2
                     candidate = {
@@ -1011,6 +1370,8 @@ class Parser:
                     continue
                 if raw.startswith(("-", "−", "–")):
                     continue
+                if Parser._is_measurement_amount(line, match.start(), match.end()):
+                    continue
                 value = Parser._to_number(raw)
                 if value is None:
                     continue
@@ -1020,6 +1381,8 @@ class Parser:
                 score = base_score
                 if 10 <= value <= 20_000:
                     score += 0.1
+                if Parser._has_adjacent_currency(line, match.start(), match.end()):
+                    score += 0.35
 
                 candidate = {
                     "status": "success",

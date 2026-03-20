@@ -1,4 +1,12 @@
 INSERT INTO product_urls (product_id, shop_id, url) VALUES (1, 1, 'https://eva.ua/pr360698/');
+INSERT INTO product_urls (product_id, shop_id, url) VALUES (1, 3, 'https://epicentrk.ua/shop/pralnyi-poroshok-dlia-mashynnoho-prannia-ariel-akva-pudra-touch-of-lenor-2-7-kh.html');
 INSERT INTO product_urls (product_id, shop_id, url) VALUES (2, 1, 'https://eva.ua/pr360641/');
+INSERT INTO product_urls (product_id, shop_id, url) VALUES (2, 3, 'https://epicentrk.ua/shop/pralnyi-poroshok-dlia-mashynnoho-ta-ruchnoho-prannia-ariel-akva-pudra-color-3-kh.html');
 INSERT INTO product_urls (product_id, shop_id, url) VALUES (3, 1, 'https://eva.ua/pr12993/');
+INSERT INTO product_urls (product_id, shop_id, url) VALUES (3, 4, 'https://www.watsons.ua/uk/c/krem-dlya-golinnya-nivea-men-dlya-chutlivoyi-shkiri-100-ml/p/BP_746387');
 INSERT INTO product_urls (product_id, shop_id, url) VALUES (4, 2, 'https://www.atbmarket.com/ru/product/sir-makij-180-g-premialle-felata-45-pup');
+INSERT INTO product_urls (product_id, shop_id, url) VALUES (5, 1, 'https://eva.ua/ua/pr18660');
+INSERT INTO product_urls (product_id, shop_id, url) VALUES (5, 5, 'https://www.itbox.ua/ru/product/Sredstvo_dlya_mitya_posudi_Finish_dlya_posudomoechnih_mashin_1_kg_5900627003116-p219055');
+INSERT INTO product_urls (product_id, shop_id, url) VALUES (6, 3, 'https://epicentrk.ua/shop/mylo-palmolive-naturel-olyvka-ta-molochko-intensyvne-zvolozhennia-90-h.html');
+INSERT INTO product_urls (product_id, shop_id, url) VALUES (6, 4, 'https://www.watsons.ua/ru/telo/kosmetika-dlya-vanny-i-dusha/mylo-tverdoe-/tualetnoe-mylo-palmolive-naturals-moisture-care-olivka-i-molochko-90-g/p/BP_1396764');
+INSERT INTO product_urls (product_id, shop_id, url) VALUES (6, 5, 'https://www.itbox.ua/ru/product/Tverdoe_milo_Palmolive_Naturals_Moisture_Care_Olivka_i_molochko_90_g_8693495033985-p1032126/');
