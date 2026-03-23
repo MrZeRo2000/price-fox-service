@@ -43,6 +43,18 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Skip fetch/parse and persist latest scrape session into scrape_detailed table.",
     )
+    parser.add_argument(
+        "--fetch-strategy",
+        choices=("playwright", "jina"),
+        default="playwright",
+        help="Fetcher backend. 'playwright' keeps current behavior; 'jina' uses r.jina.ai.",
+    )
+    parser.add_argument(
+        "--jina-rate-limit-rpm",
+        type=int,
+        default=20,
+        help="Request limit per minute for unauthenticated Jina calls (default: 20).",
+    )
     return parser
 
 
@@ -65,6 +77,8 @@ def main() -> int:
             data_path=args.data_path,
             config_path=args.config_path,
             db_path=args.db_path,
+            fetch_strategy=args.fetch_strategy,
+            jina_rate_limit_rpm=args.jina_rate_limit_rpm,
         )
         logger = configuration.logger
         if args.collect_only:
