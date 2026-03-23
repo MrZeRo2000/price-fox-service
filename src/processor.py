@@ -22,8 +22,8 @@ class ScrapeConsolidatedProcessor:
             CREATE TABLE IF NOT EXISTS {self.TABLE_NAME} (
                 session_date INTEGER NOT NULL,
                 product_id INTEGER NOT NULL,
-                best_shop_id INTEGER NOT NULL,
-                best_shop_url TEXT NOT NULL,
+                best_url_id INTEGER NOT NULL,
+                best_url TEXT NOT NULL,
                 best_value INTEGER,
                 PRIMARY KEY (session_date, product_id)
             )
@@ -44,16 +44,16 @@ class ScrapeConsolidatedProcessor:
                     INSERT INTO {self.TABLE_NAME} (
                         session_date,
                         product_id,
-                        best_shop_id,
-                        best_shop_url,
+                        best_url_id,
+                        best_url,
                         best_value
                     )
                     WITH src AS (
                         SELECT
                             session_date,
                             product_id,
-                            shop_id,
-                            shop_url,
+                            url_id,
+                            url,
                             parsed_value,
                             ROW_NUMBER() OVER (
                                 PARTITION BY session_date, product_id
@@ -65,8 +65,8 @@ class ScrapeConsolidatedProcessor:
                     SELECT
                         session_date,
                         product_id,
-                        shop_id AS best_shop_id,
-                        shop_url AS best_shop_url,
+                        url_id AS best_url_id,
+                        url AS best_url,
                         parsed_value AS best_value
                     FROM src
                     WHERE rn = 1

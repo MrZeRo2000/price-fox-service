@@ -20,18 +20,10 @@ class Config(StrictModel):
     product_catalog_path: str
 
 
-class Shop(StrictModel):
-    """Shop dictionary entity used by all pricing relations."""
+class CatalogUrl(StrictModel):
+    """URL dictionary entity used by all pricing relations."""
 
-    id: int
-    name: str = Field(min_length=1)
-    is_active: bool = True
-
-
-class ShopUrl(StrictModel):
-    """Single product URL in a specific shop."""
-
-    shop_id: int
+    url_id: int
     url: HttpUrl
     is_active: bool = True
 
@@ -49,34 +41,34 @@ class Product(StrictModel):
     id: int
     name: str = Field(min_length=1)
     category_ids: list[int] = Field(default_factory=list)
-    urls: list[ShopUrl] = Field(default_factory=list)
+    url_ids: list[int] = Field(default_factory=list)
 
     @model_validator(mode="after")
-    def ensure_single_url_per_shop(self) -> "Product":
+    def ensure_unique_url_ids(self) -> "Product":
         """
-        Protect against multiple URLs for the same shop in one product.
+        Protect against duplicate URL references in one product.
         """
-        seen_shops: set[int] = set()
-        for item in self.urls:
-            if item.shop_id in seen_shops:
+        seen_urls: set[int] = set()
+        for item in self.url_ids:
+            if item in seen_urls:
                 raise ValueError(
-                    f"Duplicate shop_id '{item.shop_id}' in product '{self.name}' URLs"
+                    f"Duplicate url_id '{item}' in product '{self.name}' URL references"
                 )
-            seen_shops.add(item.shop_id)
+            seen_urls.add(item)
         return self
 
 
 class CatalogData(StrictModel):
     """Root model containing static categories and products."""
 
-    shops: list[Shop] = Field(default_factory=list)
+    urls: list[CatalogUrl] = Field(default_factory=list)
     categories: list[Category] = Field(default_factory=list)
     products: list[Product] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def validate_references(self) -> "CatalogData":
         category_ids = {c.id for c in self.categories}
-        shop_ids = {s.id for s in self.shops}
+        url_ids = {u.url_id for u in self.urls}
 
         for product in self.products:
             for category_id in product.category_ids:
@@ -84,16 +76,16 @@ class CatalogData(StrictModel):
                     raise ValueError(
                         f"Product '{product.name}' references unknown category_id={category_id}"
                     )
-            for mapping in product.urls:
-                if mapping.shop_id not in shop_ids:
+            for url_id in product.url_ids:
+                if url_id not in url_ids:
                     raise ValueError(
-                        f"Product '{product.name}' references unknown shop_id={mapping.shop_id}"
+                        f"Product '{product.name}' references unknown url_id={url_id}"
                     )
         return self
 
 
 class PriceStatus(str, Enum):
-    """Result of processing product-shop URL for a given day."""
+    """Result of processing product URL for a given day."""
 
     SUCCESS = "success"
     FETCH_FAILED = "fetch_failed"
@@ -110,13 +102,13 @@ class Money(StrictModel):
 
 class DailyPriceRecord(StrictModel):
     """
-    Daily result for one (product, shop) pair.
+    Daily result for one (product, url) pair.
     This is the core unit for historical analytics.
     """
 
     date: date
     product_id: int
-    shop_id: int
+    url_id: int
     url: HttpUrl
     status: PriceStatus = PriceStatus.SUCCESS
     price: Optional[Money] = None
@@ -156,11 +148,11 @@ class DailyPriceBatch(StrictModel):
                 raise ValueError(
                     "All records in a batch must have date equal to calculation_date"
                 )
-            key = (record.product_id, record.shop_id)
+            key = (record.product_id, record.url_id)
             if key in unique_keys:
                 raise ValueError(
                     f"Duplicate daily record for product_id={record.product_id}, "
-                    f"shop_id='{record.shop_id}'"
+                    f"url_id='{record.url_id}'"
                 )
             unique_keys.add(key)
         return self

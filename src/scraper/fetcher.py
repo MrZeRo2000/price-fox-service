@@ -682,13 +682,13 @@ class Fetcher:
         return session_data_root
 
     @staticmethod
-    def _product_shop_output_dir(data_root: Path, product_id: int, shop_id: int) -> Path:
-        output_dir = data_root / str(product_id) / str(shop_id)
+    def _product_url_output_dir(data_root: Path, product_id: int, url_id: int) -> Path:
+        output_dir = data_root / str(product_id) / str(url_id)
         output_dir.mkdir(parents=True, exist_ok=True)
         return output_dir
 
     @staticmethod
-    def _place_result_into_product_shop_folder(result: dict, output_dir: Path) -> dict:
+    def _place_result_into_product_url_folder(result: dict, output_dir: Path) -> dict:
         if result.get("status") != "success":
             return result
 
@@ -708,14 +708,18 @@ class Fetcher:
     def execute(self):
         self.scrape_session.fetch_start_datetime = datetime.today()
         data_root = self._prepare_output_path()
+        url_by_id = {
+            url.url_id: str(url.url)
+            for url in self.configuration.product_catalog_data.urls
+        }
         jobs = [
             {
                 "product_id": product.id,
-                "shop_id": shop_url.shop_id,
-                "url": str(shop_url.url),
+                "url_id": url_id,
+                "url": url_by_id[url_id],
             }
             for product in self.configuration.product_catalog_data.products
-            for shop_url in product.urls
+            for url_id in product.url_ids
         ]
 
         if not jobs:
@@ -731,21 +735,21 @@ class Fetcher:
 
         all_results = []
         for job, result in zip(jobs, raw_results):
-            output_dir = self._product_shop_output_dir(
+            output_dir = self._product_url_output_dir(
                 data_root=data_root,
                 product_id=job["product_id"],
-                shop_id=job["shop_id"],
+                url_id=job["url_id"],
             )
-            placed_result = self._place_result_into_product_shop_folder(result, output_dir)
+            placed_result = self._place_result_into_product_url_folder(result, output_dir)
             all_results.append(
                 {
                     "product_id": job["product_id"],
-                    "shop_id": job["shop_id"],
+                    "url_id": job["url_id"],
                     "result": placed_result,
                 }
             )
 
-        # Keep data root organized strictly by product_id/shop_id folders.
+        # Keep data root organized strictly by product_id/url_id folders.
         for item in data_root.iterdir():
             if item.is_file():
                 item.unlink()

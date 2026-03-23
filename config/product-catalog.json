@@ -1,12 +1,20 @@
 {
-  "shops": [
+  "urls": [
     {
-      "id": 1,
-      "name": "eva"
+      "url_id": 1,
+      "url": "https://eva.ua/pr360698/"
     },
     {
-      "id": 2,
-      "name": "ATB"
+      "url_id": 2,
+      "url": "https://eva.ua/pr360641/"
+    },
+    {
+      "url_id": 3,
+      "url": "https://eva.ua/pr12993/"
+    },
+    {
+      "url_id": 4,
+      "url": "https://www.atbmarket.com/ru/product/sir-makij-180-g-premialle-felata-45-pup"
     }
   ],
   "categories": [
@@ -28,45 +36,25 @@
       "id": 1,
       "name": "Ariel для белого",
       "category_ids": [1],
-      "urls": [
-        {
-          "shop_id": 1,
-          "url": "https://eva.ua/pr360698/"
-        }
-      ]
+      "url_ids": [1]
     },
     {
       "id": 2,
       "name": "Ariel для цветного",
       "category_ids": [1],
-      "urls": [
-        {
-          "shop_id": 1,
-          "url": "https://eva.ua/pr360641/"
-        }
-      ]
+      "url_ids": [2]
     },
     {
       "id": 3,
       "name": "Nivea крем для бритья",
       "category_ids": [2],
-      "urls": [
-        {
-          "shop_id": 1,
-          "url": "https://eva.ua/pr12993/"
-        }
-      ]
+      "url_ids": [3]
     },
     {
       "id": 4,
       "name": "Фета",
       "category_ids": [3],
-      "urls": [
-        {
-          "shop_id": 2,
-          "url": "https://www.atbmarket.com/ru/product/sir-makij-180-g-premialle-felata-45-pup"
-        }
-      ]
+      "url_ids": [4]
     }
   ]
 }

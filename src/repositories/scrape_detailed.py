@@ -31,7 +31,7 @@ class ScrapeDetailedRepository:
                 connection.executemany(
                     (
                         f"INSERT INTO {self.TABLE_NAME} "
-                        "(session_date, product_id, shop_id, shop_url, parsed_status, parsed_value) "
+                        "(session_date, product_id, url_id, url, parsed_status, parsed_value) "
                         "VALUES (?, ?, ?, ?, ?, ?)"
                     ),
                     rows,

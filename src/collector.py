@@ -59,18 +59,18 @@ class ScrapeDetailedCollector:
                 continue
             product_id = int(product_folder.name)
 
-            for shop_folder in sorted([item for item in product_folder.iterdir() if item.is_dir()]):
-                if not shop_folder.name.isdigit():
+            for url_folder in sorted([item for item in product_folder.iterdir() if item.is_dir()]):
+                if not url_folder.name.isdigit():
                     continue
-                shop_id = int(shop_folder.name)
+                url_id = int(url_folder.name)
 
-                metadata_path = shop_folder / "metadata.json"
-                parsed_path = shop_folder / "parsed.json"
+                metadata_path = url_folder / "metadata.json"
+                parsed_path = url_folder / "parsed.json"
                 if not metadata_path.exists() or not parsed_path.exists():
                     self._logger.warning(
-                        "Skipping product_id=%s, shop_id=%s because metadata.json or parsed.json is missing.",
+                        "Skipping product_id=%s, url_id=%s because metadata.json or parsed.json is missing.",
                         product_id,
-                        shop_id,
+                        url_id,
                     )
                     continue
 
@@ -81,7 +81,7 @@ class ScrapeDetailedCollector:
                     (
                         session_date,
                         product_id,
-                        shop_id,
+                        url_id,
                         str(metadata.get("url") or "").strip(),
                         self._to_parsed_status(parsed.get("status")),
                         self._to_parsed_value(parsed.get("price")),

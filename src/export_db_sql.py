@@ -6,7 +6,7 @@ from pathlib import Path
 TABLES_TO_EXPORT = [
     "categories",
     "product_categories",
-    "shops",
+    "urls",
     "products",
     "product_urls",
 ]

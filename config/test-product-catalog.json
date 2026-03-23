@@ -1,8 +1,8 @@
 {
-  "shops": [
+  "urls": [
     {
-      "id": 1,
-      "name": "test"
+      "url_id": 1,
+      "url": "https://www.itbox.ua/ru/product/Tverdoe_milo_Palmolive_Naturals_Moisture_Care_Olivka_i_molochko_90_g_8693495033985-p1032126/"
     }
   ],
   "categories": [
@@ -16,12 +16,7 @@
       "id": 1,
       "name": "test",
       "category_ids": [1],
-      "urls": [
-        {
-          "shop_id": 1,
-          "url": "https://www.watsons.ua/uk/c/krem-dlya-golinnya-nivea-men-dlya-chutlivoyi-shkiri-100-ml/p/BP_746387"
-        }
-      ]
+      "url_ids": [1]
     }
   ]
 }

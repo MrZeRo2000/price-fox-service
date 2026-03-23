@@ -25,18 +25,13 @@ class Parser:
         self.generator = None
         self.generator_task = None
         self._generator_init_error = None
-        self._shop_name_by_id = {
-            shop.id: shop.name for shop in self.configuration.product_catalog_data.shops
-        }
         self._product_name_by_id = {
             product.id: product.name for product in self.configuration.product_catalog_data.products
         }
-        self._url_by_product_shop = {}
-        for product in self.configuration.product_catalog_data.products:
-            for shop_url in product.urls:
-                self._url_by_product_shop[(product.id, shop_url.shop_id)] = str(
-                    shop_url.url
-                )
+        self._url_by_id = {
+            item.url_id: str(item.url)
+            for item in self.configuration.product_catalog_data.urls
+        }
         self._init_generator()
 
     @staticmethod
@@ -99,14 +94,13 @@ class Parser:
         return resolve_parser_data_root(base_data_root)
 
     def _resolve_catalog_context(
-        self, product_id: int, shop_id: int
-    ) -> tuple[str, str, Optional[str]]:
+        self, product_id: int, url_id: int
+    ) -> tuple[str, Optional[str]]:
         product_name = self._product_name_by_id.get(
             product_id, f"unknown_product_{product_id}"
         )
-        shop_name = self._shop_name_by_id.get(shop_id, f"unknown_shop_{shop_id}")
-        url = self._url_by_product_shop.get((product_id, shop_id))
-        return product_name, shop_name, url
+        url = self._url_by_id.get(url_id)
+        return product_name, url
 
     def _init_generator(self):
         try:
@@ -144,18 +138,18 @@ class Parser:
         )
 
     @staticmethod
-    def _find_primary_file(shop_folder: Path, extension: str) -> Optional[Path]:
-        canonical = shop_folder / f"page.{extension}"
+    def _find_primary_file(url_folder: Path, extension: str) -> Optional[Path]:
+        canonical = url_folder / f"page.{extension}"
         if canonical.exists():
             return canonical
 
-        matches = sorted(shop_folder.glob(f"*.{extension}"))
+        matches = sorted(url_folder.glob(f"*.{extension}"))
         return matches[0] if matches else None
 
     @staticmethod
-    def _read_text_sources(shop_folder: Path) -> dict:
-        html_file = Parser._find_primary_file(shop_folder, "html")
-        txt_file = Parser._find_primary_file(shop_folder, "txt")
+    def _read_text_sources(url_folder: Path) -> dict:
+        html_file = Parser._find_primary_file(url_folder, "html")
+        txt_file = Parser._find_primary_file(url_folder, "txt")
 
         html_text = ""
         page_text = ""
@@ -424,6 +418,17 @@ class Parser:
         )
 
     @staticmethod
+    def _is_time_like_token(text: str, match_start: int, match_end: int) -> bool:
+        """
+        Ignore time-like fragments such as "17:00" that regex can split into "17".
+        """
+        left = text[max(0, match_start - 3):match_start]
+        center = text[match_start:match_end]
+        right = text[match_end:min(len(text), match_end + 4)]
+        probe = f"{left}{center}{right}"
+        return bool(re.search(r"\b\d{1,2}:\d{2}\b", probe))
+
+    @staticmethod
     def _extract_from_html_attributes(html_path: Optional[str]) -> Optional[dict]:
         if not html_path:
             return None
@@ -545,6 +550,8 @@ class Parser:
                         continue
                     if raw_number.startswith(("-", "−", "–")):
                         continue
+                    if Parser._is_time_like_token(raw, match.start(), match.end()):
+                        continue
                     if Parser._is_measurement_amount(raw, match.start(), match.end()):
                         continue
                     value = Parser._to_number(raw_number)
@@ -634,6 +641,8 @@ class Parser:
                 if Parser._is_negative_prefixed(line, match.start()):
                     continue
                 if raw.startswith(("-", "−", "–")):
+                    continue
+                if Parser._is_time_like_token(line, match.start(), match.end()):
                     continue
                 if Parser._is_measurement_amount(line, match.start(), match.end()):
                     continue
@@ -750,6 +759,12 @@ class Parser:
 
             if parsed is None:
                 continue
+            raw_price_text = str(parsed.get("raw_price_text") or "")
+            if raw_price_text and ":" in raw_price_text:
+                parsed["status"] = "failed"
+                parsed["price"] = None
+                parsed["confidence"] = 0
+                parsed["error"] = "Rejected time-like token in raw_price_text"
 
             if best is None or parsed["confidence"] > best["confidence"]:
                 best = parsed
@@ -790,10 +805,10 @@ class Parser:
             "details": parsing_errors[:3],
         }
 
-    def _parse_single_folder(self, product_id: int, shop_id: int, shop_folder: Path) -> dict:
+    def _parse_single_folder(self, product_id: int, url_id: int, url_folder: Path) -> dict:
         parse_started_at_dt = datetime.utcnow()
         parse_started_at = parse_started_at_dt.isoformat()
-        source = self._read_text_sources(shop_folder)
+        source = self._read_text_sources(url_folder)
         if not source["text"]:
             parse_finished_at_dt = datetime.utcnow()
             parse_finished_at = parse_finished_at_dt.isoformat()
@@ -803,7 +818,8 @@ class Parser:
             result = {
                 "status": "failed",
                 "product_id": product_id,
-                "shop_id": shop_id,
+                "url_id": url_id,
+                "url": self._url_by_id.get(url_id),
                 "price": None,
                 "currency": None,
                 "raw_price_text": None,
@@ -819,7 +835,7 @@ class Parser:
                 "html_path": source["html_path"],
                 "txt_path": source["txt_path"],
             }
-            (shop_folder / "parsed.json").write_text(
+            (url_folder / "parsed.json").write_text(
                 json.dumps(result, indent=2, ensure_ascii=False),
                 encoding="utf-8",
             )
@@ -861,7 +877,8 @@ class Parser:
         result = {
             "status": extracted.get("status"),
             "product_id": product_id,
-            "shop_id": shop_id,
+            "url_id": url_id,
+            "url": self._url_by_id.get(url_id),
             "price": extracted.get("price"),
             "currency": extracted.get("currency"),
             "raw_price_text": extracted.get("raw_price_text"),
@@ -878,7 +895,7 @@ class Parser:
             "html_path": source["html_path"],
             "txt_path": source["txt_path"],
         }
-        (shop_folder / "parsed.json").write_text(
+        (url_folder / "parsed.json").write_text(
             json.dumps(result, indent=2, ensure_ascii=False),
             encoding="utf-8",
         )
@@ -894,21 +911,21 @@ class Parser:
                 continue
             product_id = int(product_folder.name)
 
-            for shop_folder in sorted([s for s in product_folder.iterdir() if s.is_dir()]):
-                if not shop_folder.name.isdigit():
+            for url_folder in sorted([s for s in product_folder.iterdir() if s.is_dir()]):
+                if not url_folder.name.isdigit():
                     continue
-                shop_id = int(shop_folder.name)
-                product_name, shop_name, url = self._resolve_catalog_context(
+                url_id = int(url_folder.name)
+                product_name, url = self._resolve_catalog_context(
                     product_id=product_id,
-                    shop_id=shop_id,
+                    url_id=url_id,
                 )
                 self.logger.info(
                     f"Parsing product='{product_name}' (id={product_id}) "
-                    f"from shop='{shop_name}' (id={shop_id}), "
+                    f"for url_id={url_id}, "
                     f"url='{url if url is not None else 'unknown'}'"
                 )
                 all_results.append(
-                    self._parse_single_folder(product_id, shop_id, shop_folder)
+                    self._parse_single_folder(product_id, url_id, url_folder)
                 )
 
         return all_results
