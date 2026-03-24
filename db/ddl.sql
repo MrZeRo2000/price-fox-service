@@ -14,6 +14,7 @@ CREATE TABLE product_categories (
 CREATE TABLE "product_urls" (
                             product_id INTEGER NOT NULL,
                             url_id INTEGER NOT NULL,
+                            is_active INTEGER NOT NULL DEFAULT 1 CHECK (is_active IN (0, 1)),
                             PRIMARY KEY (product_id, url_id),
                             FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE CASCADE,
                             FOREIGN KEY (url_id) REFERENCES urls(id) ON DELETE CASCADE

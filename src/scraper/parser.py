@@ -1,15 +1,17 @@
 import json
-import os
 import re
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
+from urllib.parse import urlparse
 
 from bs4 import BeautifulSoup
 from huggingface_hub import snapshot_download
+from repositories import PriceStrategyRepository
 from transformers import pipeline
 
 from cfg import Configuration
+from scraper.parse_strategies import GeminiUrlParseStrategy
 from session import resolve_parser_data_root
 
 
@@ -32,21 +34,14 @@ class Parser:
             item.url_id: str(item.url)
             for item in self.configuration.product_catalog_data.urls
         }
+        self._default_price_strategy = "playwright"
+        self._site_price_strategy_overrides = self._load_site_price_strategy_overrides()
+        self._strategy_settings = self._load_strategy_settings_from_database()
+        self._gemini_url_strategy = GeminiUrlParseStrategy(
+            strategy_settings=self._strategy_settings,
+            logger=self.logger,
+        )
         self._init_generator()
-
-    @staticmethod
-    def _enable_hf_offline_mode():
-        # Enforce fully-local inference and keep output clean.
-        os.environ["HF_HUB_OFFLINE"] = "1"
-        os.environ["TRANSFORMERS_OFFLINE"] = "1"
-        os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
-
-    @staticmethod
-    def _enable_hf_online_mode():
-        # Temporarily allow network only for one-time model bootstrap.
-        os.environ.pop("HF_HUB_OFFLINE", None)
-        os.environ.pop("TRANSFORMERS_OFFLINE", None)
-        os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
 
     def _is_model_cached_locally(self) -> bool:
         try:
@@ -63,31 +58,10 @@ class Parser:
             self.logger.info(f"Model '{self.model_id}' found in local HF cache.")
             return
 
-        allow_download = os.environ.get("PRICE_FOX_ALLOW_MODEL_DOWNLOAD", "0").strip().lower() in {
-            "1",
-            "true",
-            "yes",
-        }
-        if not allow_download:
-            raise RuntimeError(
-                f"Model '{self.model_id}' is not present in local cache and automatic download is disabled. "
-                "Set PRICE_FOX_ALLOW_MODEL_DOWNLOAD=1 to enable one-time model download."
-            )
-
-        self.logger.warning(
-            f"Model '{self.model_id}' not found in local HF cache. Starting one-time download."
+        raise RuntimeError(
+            f"Model '{self.model_id}' is not present in local cache. "
+            "Pre-download the model to local Hugging Face cache before running."
         )
-        self._enable_hf_online_mode()
-        try:
-            snapshot_download(
-                repo_id=self.model_id,
-                resume_download=True,
-            )
-            self.logger.info(
-                f"Model '{self.model_id}' downloaded to local HF cache."
-            )
-        finally:
-            self._enable_hf_offline_mode()
 
     @staticmethod
     def _resolve_data_root(base_data_root: Path) -> Path:
@@ -102,6 +76,114 @@ class Parser:
         url = self._url_by_id.get(url_id)
         return product_name, url
 
+    @staticmethod
+    def _normalize_host(url: Optional[str]) -> str:
+        if not url:
+            return ""
+        return (urlparse(url).hostname or "").strip().lower()
+
+    @staticmethod
+    def _normalize_strategy_name(strategy_name: Optional[str]) -> str:
+        normalized = (strategy_name or "").strip().lower().replace("-", "_")
+        if normalized in {"", "playwright", "local", "local_hf", "huggingface"}:
+            return "playwright"
+        if normalized == "jina":
+            return "jina"
+        if normalized in {"gemini", "gemini_url"}:
+            return "gemini_url"
+        return "playwright"
+
+    def _load_site_price_strategy_overrides(self) -> dict[str, str]:
+        return self._load_site_price_strategy_overrides_from_database()
+
+    def _load_site_price_strategy_overrides_from_database(self) -> dict[str, str]:
+        db_path = self.configuration.product_catalog_db_path
+        if not db_path:
+            return {}
+        try:
+            repository = PriceStrategyRepository(db_path)
+            raw_mapping = repository.load_domain_strategy_overrides()
+        except Exception as exc:
+            self.logger.warning(
+                f"Unable to load strategy domains from DB '{db_path}': {exc}"
+            )
+            return {}
+
+        normalized: dict[str, str] = {}
+        for host, strategy_name in raw_mapping.items():
+            host_key = str(host).strip().lower()
+            if not host_key:
+                continue
+            normalized[host_key] = self._normalize_strategy_name(strategy_name)
+        return normalized
+
+    def _load_strategy_settings_from_database(self) -> dict[str, str]:
+        db_path = self.configuration.product_catalog_db_path
+        if not db_path:
+            return {}
+        try:
+            repository = PriceStrategyRepository(db_path)
+            return repository.load_settings()
+        except Exception as exc:
+            self.logger.warning(
+                f"Unable to load strategy settings from DB '{db_path}': {exc}"
+            )
+            return {}
+
+    def _resolve_price_strategy(self, url: Optional[str]) -> str:
+        host = self._normalize_host(url)
+        default_strategy = self._normalize_strategy_name(self._default_price_strategy)
+        if not host:
+            return default_strategy
+
+        if host in self._site_price_strategy_overrides:
+            return self._site_price_strategy_overrides[host]
+
+        best_suffix = ""
+        best_strategy = default_strategy
+        for suffix, strategy in self._site_price_strategy_overrides.items():
+            normalized_suffix = suffix.lstrip(".")
+            if not normalized_suffix:
+                continue
+            if host == normalized_suffix or host.endswith(f".{normalized_suffix}"):
+                if len(normalized_suffix) > len(best_suffix):
+                    best_suffix = normalized_suffix
+                    best_strategy = strategy
+        return best_strategy
+
+    def _extract_price_with_default_pipeline(self, source: dict) -> dict:
+        try:
+            extracted = self._extract_price_with_hf(source["text"])
+        except Exception as exc:
+            extracted = {
+                "status": "failed",
+                "price": None,
+                "currency": None,
+                "raw_price_text": None,
+                "price_type": "other",
+                "evidence_text": None,
+                "confidence": 0,
+                "provider": "huggingface-local",
+                "error": f"Local Hugging Face parse failed: {exc}",
+            }
+
+        if extracted.get("price") is None or extracted.get("price_type") != "product":
+            html_candidate = self._extract_from_html_attributes(source["html_path"])
+            text_candidate = self._extract_from_text_candidates(source["text"])
+            if html_candidate is not None and text_candidate is not None:
+                fallback = (
+                    html_candidate
+                    if html_candidate["confidence"] >= text_candidate["confidence"]
+                    else text_candidate
+                )
+            else:
+                fallback = html_candidate or text_candidate
+
+            if fallback is not None and fallback.get("price_type") == "product":
+                extracted = fallback
+
+        return extracted
+
     def _init_generator(self):
         try:
             self._ensure_model_available_locally()
@@ -111,7 +193,6 @@ class Parser:
             )
             return
 
-        self._enable_hf_offline_mode()
         tasks = ("text2text-generation", "text-generation")
         last_error = None
 
@@ -808,8 +889,51 @@ class Parser:
     def _parse_single_folder(self, product_id: int, url_id: int, url_folder: Path) -> dict:
         parse_started_at_dt = datetime.utcnow()
         parse_started_at = parse_started_at_dt.isoformat()
+        url = self._url_by_id.get(url_id)
+        selected_strategy = self._resolve_price_strategy(url)
+        self.logger.info(
+            f"Planned parse strategy for url_id={url_id} "
+            f"({url if url is not None else 'unknown'}): {selected_strategy}"
+        )
         source = self._read_text_sources(url_folder)
         if not source["text"]:
+            if selected_strategy == "gemini_url":
+                gemini_candidate = self._gemini_url_strategy.extract_price_from_url(url)
+            else:
+                gemini_candidate = None
+            if gemini_candidate is not None and gemini_candidate.get("status") == "success":
+                parse_finished_at_dt = datetime.utcnow()
+                parse_finished_at = parse_finished_at_dt.isoformat()
+                parse_duration_seconds = (
+                    parse_finished_at_dt - parse_started_at_dt
+                ).total_seconds()
+                result = {
+                    "status": "success",
+                    "product_id": product_id,
+                    "url_id": url_id,
+                    "url": url,
+                    "price": gemini_candidate.get("price"),
+                    "currency": gemini_candidate.get("currency"),
+                    "raw_price_text": gemini_candidate.get("raw_price_text"),
+                    "price_type": "product",
+                    "evidence_text": gemini_candidate.get("evidence_text"),
+                    "confidence": gemini_candidate.get("confidence", 0),
+                    "provider": gemini_candidate.get("provider"),
+                    "error": None,
+                    "model_id": self.model_id,
+                    "parse_started_at": parse_started_at,
+                    "parse_finished_at": parse_finished_at,
+                    "parse_duration_seconds": parse_duration_seconds,
+                    "parsed_at": parse_finished_at,
+                    "html_path": source["html_path"],
+                    "txt_path": source["txt_path"],
+                }
+                (url_folder / "parsed.json").write_text(
+                    json.dumps(result, indent=2, ensure_ascii=False),
+                    encoding="utf-8",
+                )
+                return result
+
             parse_finished_at_dt = datetime.utcnow()
             parse_finished_at = parse_finished_at_dt.isoformat()
             parse_duration_seconds = (
@@ -819,14 +943,23 @@ class Parser:
                 "status": "failed",
                 "product_id": product_id,
                 "url_id": url_id,
-                "url": self._url_by_id.get(url_id),
+                "url": url,
                 "price": None,
                 "currency": None,
                 "raw_price_text": None,
                 "price_type": "other",
                 "evidence_text": None,
                 "confidence": 0,
-                "error": "Missing readable HTML/TXT content",
+                "provider": (
+                    gemini_candidate.get("provider")
+                    if gemini_candidate is not None
+                    else None
+                ),
+                "error": (
+                    gemini_candidate.get("error")
+                    if gemini_candidate is not None
+                    else "Missing readable HTML/TXT content"
+                ),
                 "model_id": self.model_id,
                 "parse_started_at": parse_started_at,
                 "parse_finished_at": parse_finished_at,
@@ -841,35 +974,10 @@ class Parser:
             )
             return result
 
-        try:
-            extracted = self._extract_price_with_hf(source["text"])
-        except Exception as exc:
-            extracted = {
-                "status": "failed",
-                "price": None,
-                "currency": None,
-                "raw_price_text": None,
-                "price_type": "other",
-                "evidence_text": None,
-                "confidence": 0,
-                "provider": "huggingface-local",
-                "error": f"Local Hugging Face parse failed: {exc}",
-            }
-
-        if extracted.get("price") is None or extracted.get("price_type") != "product":
-            html_candidate = self._extract_from_html_attributes(source["html_path"])
-            text_candidate = self._extract_from_text_candidates(source["text"])
-            if html_candidate is not None and text_candidate is not None:
-                fallback = (
-                    html_candidate
-                    if html_candidate["confidence"] >= text_candidate["confidence"]
-                    else text_candidate
-                )
-            else:
-                fallback = html_candidate or text_candidate
-
-            if fallback is not None and fallback.get("price_type") == "product":
-                extracted = fallback
+        if selected_strategy == "gemini_url":
+            extracted = self._gemini_url_strategy.extract_price_from_url(url)
+        else:
+            extracted = self._extract_price_with_default_pipeline(source)
 
         parse_finished_at_dt = datetime.utcnow()
         parse_finished_at = parse_finished_at_dt.isoformat()
@@ -878,7 +986,7 @@ class Parser:
             "status": extracted.get("status"),
             "product_id": product_id,
             "url_id": url_id,
-            "url": self._url_by_id.get(url_id),
+            "url": url,
             "price": extracted.get("price"),
             "currency": extracted.get("currency"),
             "raw_price_text": extracted.get("raw_price_text"),

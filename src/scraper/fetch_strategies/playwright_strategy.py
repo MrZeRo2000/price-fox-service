@@ -1,7 +1,6 @@
 import hashlib
 import json
 import logging
-import os
 import time
 from pathlib import Path
 from typing import Optional
@@ -467,11 +466,7 @@ class PlaywrightFetchStrategy(FetchStrategy):
     ) -> dict:
         active_logger = logger or logging.getLogger("price_fox")
         active_logger.warning("🛡️ Running anti-bot fallback browser session...")
-        antibot_headless = os.environ.get("PRICE_FOX_ANTIBOT_HEADLESS", "0").strip().lower() in {
-            "1",
-            "true",
-            "yes",
-        }
+        antibot_headless = False
 
         browser = None
         context = None

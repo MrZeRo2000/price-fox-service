@@ -13,8 +13,6 @@ class Configuration:
         data_path: str = None,
         config_path: str = None,
         db_path: str = None,
-        fetch_strategy: str = "playwright",
-        jina_rate_limit_rpm: int = 20,
     ):
         settings = resolve_configuration_settings(
             data_path=data_path,
@@ -37,8 +35,6 @@ class Configuration:
             if config_path is not None
             else self.load_configuration_from_database(product_catalog_db_path)
         )
-        self._fetch_strategy = (fetch_strategy or "playwright").strip().lower()
-        self._jina_rate_limit_rpm = max(1, int(jina_rate_limit_rpm))
 
     @staticmethod
     def load_configuration_from_json(product_catalog_path: str) -> CatalogData:
@@ -67,11 +63,3 @@ class Configuration:
     @property
     def logger(self):
         return self._logger
-
-    @property
-    def fetch_strategy(self) -> str:
-        return self._fetch_strategy
-
-    @property
-    def jina_rate_limit_rpm(self) -> int:
-        return self._jina_rate_limit_rpm

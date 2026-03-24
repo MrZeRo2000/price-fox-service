@@ -13,6 +13,7 @@ class Fetcher:
     def __init__(self, configuration: Configuration, scrape_session: ScrapeSession):
         self.configuration = configuration
         self.scrape_session = scrape_session
+        self._strategy_settings = self._load_strategy_settings()
 
     def _prepare_output_path(self) -> Path:
         base_data_root = Path(self.configuration.data_path)
@@ -124,7 +125,6 @@ import hashlib
 import html
 import json
 import logging
-import os
 import shutil
 import time
 from datetime import datetime
@@ -139,6 +139,7 @@ from playwright.sync_api import sync_playwright
 
 from cfg import Configuration
 from models import ScrapeSession
+from repositories import PriceStrategyRepository
 from session.constants import DATA_SESSION_FOLDER_DATETIME_FORMAT
 
 
@@ -165,6 +166,92 @@ class PlaywrightFetchStrategy(FetchStrategy):
             output_dir=output_dir,
             logger=logger,
         )
+
+
+class GeminiUrlFetchStrategy(FetchStrategy):
+    @staticmethod
+    def _write_placeholder_result_files(
+        *,
+        url: str,
+        output_dir: str,
+        browser_session_id: str,
+        logger: Optional[logging.Logger] = None,
+    ) -> dict:
+        active_logger = logger or logging.getLogger("price_fox")
+        timestamp = time.strftime("%Y%m%d_%H%M%S")
+        safe_name = (
+            url.replace("https://", "").replace("http://", "").replace("/", "_")[:50]
+        )
+        base_name = f"{safe_name}_{timestamp}"
+
+        placeholder_text = (
+            "Fetch skipped by gemini_url strategy. "
+            "Price extraction is deferred to parser via URL-based Gemini call."
+        )
+        text_path = f"{output_dir}/{base_name}.txt"
+        with open(text_path, "w", encoding="utf-8") as f:
+            f.write(placeholder_text)
+
+        placeholder_html = (
+            "<!doctype html><html><head><meta charset='utf-8'>"
+            f"<title>{html.escape(url)}</title></head><body><pre>"
+            f"{html.escape(placeholder_text)}</pre></body></html>"
+        )
+        html_path = f"{output_dir}/{base_name}.html"
+        with open(html_path, "w", encoding="utf-8") as f:
+            f.write(placeholder_html)
+
+        metadata = {
+            "url": url,
+            "timestamp": timestamp,
+            "browser_session": browser_session_id,
+            "title": f"Gemini deferred fetch for {url}",
+            "text_length": len(placeholder_text),
+            "html_length": len(placeholder_html),
+            "element_count": None,
+            "reliability_score": None,
+            "wait_time": None,
+            "fetch_attempts": 0,
+            "scraping_strategy_used": "gemini_url",
+            "fetch_strategy": "gemini_url",
+            "source_endpoint": "gemini_url_deferred_parser",
+        }
+        metadata_path = f"{output_dir}/{base_name}_metadata.json"
+        with open(metadata_path, "w", encoding="utf-8") as f:
+            json.dump(metadata, f, indent=2, ensure_ascii=False)
+
+        active_logger.info("  💾 Placeholder fetch artifacts for gemini_url strategy.")
+        return {
+            "url": url,
+            "status": "success",
+            "html": html_path,
+            "text": text_path,
+            "metadata": metadata_path,
+            "reliability": None,
+            "size": len(placeholder_html),
+        }
+
+    def fetch_batch(
+        self,
+        urls: list[str],
+        output_dir: str,
+        logger: Optional[logging.Logger] = None,
+    ) -> list[dict]:
+        active_logger = logger or logging.getLogger("price_fox")
+        results = []
+        for url in urls:
+            active_logger.info(
+                "🧠 Skipping page fetch for gemini_url strategy; parsing will use URL directly."
+            )
+            results.append(
+                self._write_placeholder_result_files(
+                    url=url,
+                    output_dir=output_dir,
+                    browser_session_id=time.strftime("%Y%m%d_%H%M%S"),
+                    logger=active_logger,
+                )
+            )
+        return results
 
 
 class JinaFetchStrategy(FetchStrategy):
@@ -246,6 +333,7 @@ class JinaFetchStrategy(FetchStrategy):
         output_dir: str,
         browser_session_id: str,
         markdown_content: str,
+        scraping_strategy_used: str = "jina",
         logger: Optional[logging.Logger] = None,
     ) -> dict:
         active_logger = logger or logging.getLogger("price_fox")
@@ -279,6 +367,7 @@ class JinaFetchStrategy(FetchStrategy):
             "reliability_score": None,
             "wait_time": None,
             "fetch_attempts": 1,
+            "scraping_strategy_used": scraping_strategy_used,
             "fetch_strategy": "jina",
             "source_endpoint": "https://r.jina.ai/",
         }
@@ -350,6 +439,7 @@ class Fetcher:
     def __init__(self, configuration: Configuration, scrape_session: ScrapeSession):
         self.configuration = configuration
         self.scrape_session = scrape_session
+        self._strategy_settings = self._load_strategy_settings()
 
     @staticmethod
     def content_stable_wait(page, max_wait=120, logger: Optional[logging.Logger] = None):
@@ -481,7 +571,12 @@ class Fetcher:
 
     @staticmethod
     def save_single_page(
-        page, url, output_dir, browser_session_id, logger: Optional[logging.Logger] = None
+        page,
+        url,
+        output_dir,
+        browser_session_id,
+        scraping_strategy_used: str = "playwright",
+        logger: Optional[logging.Logger] = None,
     ):
         """
         Saves a single page using an existing page instance
@@ -531,6 +626,13 @@ class Fetcher:
                     except Exception:
                         pass
                     page.goto(url, wait_until="domcontentloaded", timeout=60000)
+
+                if Fetcher._is_itbox_url(url):
+                    Fetcher._wait_out_itbox_cloudflare_challenge(
+                        page=page,
+                        url=url,
+                        logger=active_logger,
+                    )
 
                 # Quick pre-check to avoid long waits on known blocked pages.
                 quick_html = page.content()
@@ -621,6 +723,7 @@ class Fetcher:
                 "reliability_score": wait_result["success_rate"],
                 "wait_time": wait_result["elapsed"],
                 "fetch_attempts": attempt_count,
+                "scraping_strategy_used": scraping_strategy_used,
             }
 
             metadata_path = f"{output_dir}/{base_name}_metadata.json"
@@ -650,6 +753,91 @@ class Fetcher:
             }
 
     @staticmethod
+    def _is_itbox_url(url: str) -> bool:
+        host = (urlparse(url).hostname or "").lower()
+        return host.endswith("itbox.ua")
+
+    @staticmethod
+    def _has_cloudflare_challenge_content(text_content: str, html_content: str) -> bool:
+        combined = f"{text_content}\n{html_content}".lower()
+        cloudflare_markers = (
+            "performance and security by cloudflare",
+            "verify you are not a bot",
+            "this website uses a security service to protect against malicious bots",
+            "ray id:",
+            "checking your browser before accessing",
+            "just a moment...",
+            "cloudflare",
+            "cf-browser-verification",
+            "cf-challenge",
+            "cf_turnstile",
+        )
+        return any(marker in combined for marker in cloudflare_markers)
+
+    @staticmethod
+    def _wait_out_itbox_cloudflare_challenge(
+        page,
+        url: str,
+        logger: Optional[logging.Logger] = None,
+        max_wait_seconds: int = 90,
+    ) -> bool:
+        active_logger = logger or logging.getLogger("price_fox")
+        if not Fetcher._is_itbox_url(url):
+            return False
+
+        started_at = time.time()
+        check_interval_seconds = 3
+        challenge_seen = False
+        first_check_text = page.evaluate("() => document.body.innerText")
+        first_check_html = page.content()
+        is_challenged = Fetcher._has_cloudflare_challenge_content(
+            first_check_text, first_check_html
+        )
+        if not is_challenged:
+            return False
+
+        challenge_seen = True
+        active_logger.warning(
+            "  ⚠️ itbox.ua Cloudflare challenge detected. Waiting for automatic clearance..."
+        )
+
+        while time.time() - started_at < max_wait_seconds:
+            # Human-like interaction and idle wait can help JS challenges complete.
+            try:
+                page.mouse.move(320, 260)
+                time.sleep(0.2)
+                page.mouse.move(760, 420)
+            except Exception:
+                pass
+            try:
+                page.wait_for_load_state("networkidle", timeout=5000)
+            except Exception:
+                pass
+            time.sleep(check_interval_seconds)
+
+            current_text = page.evaluate("() => document.body.innerText")
+            current_html = page.content()
+            if not Fetcher._has_cloudflare_challenge_content(current_text, current_html):
+                active_logger.info(
+                    "  ✓ itbox.ua Cloudflare challenge appears cleared in current tab."
+                )
+                return True
+
+            # Refresh once midway to re-trigger scripts if needed.
+            elapsed = time.time() - started_at
+            if 15 <= elapsed <= 20:
+                try:
+                    page.reload(wait_until="domcontentloaded", timeout=60000)
+                except Exception:
+                    pass
+
+        if challenge_seen:
+            active_logger.warning(
+                "  ⚠️ itbox.ua Cloudflare challenge did not clear within timeout."
+            )
+        return challenge_seen
+
+    @staticmethod
     def _has_access_denied_content(text_content: str, html_content: str) -> bool:
         combined = f"{text_content}\n{html_content}".lower()
         denial_markers = (
@@ -660,7 +848,10 @@ class Fetcher:
             "request blocked",
             "blocked by security policy",
         )
-        return any(marker in combined for marker in denial_markers)
+        has_access_denied = any(marker in combined for marker in denial_markers)
+        if has_access_denied:
+            return True
+        return Fetcher._has_cloudflare_challenge_content(text_content, html_content)
 
     @staticmethod
     def _try_accept_cookie_consent(page, logger: Optional[logging.Logger] = None) -> bool:
@@ -813,8 +1004,11 @@ class Fetcher:
             or "you don't have permission" in error
             or "forbidden" in error
             or "blocked" in error
+            or "cloudflare" in error
+            or "verify you are not a bot" in error
+            or "security service" in error
         )
-        return is_access_error or host.endswith("watsons.ua")
+        return is_access_error or host.endswith("watsons.ua") or host.endswith("itbox.ua")
 
     @staticmethod
     def _run_antibot_fallback_fetch(
@@ -826,11 +1020,7 @@ class Fetcher:
     ) -> dict:
         active_logger = logger or logging.getLogger("price_fox")
         active_logger.warning("🛡️ Running anti-bot fallback browser session...")
-        antibot_headless = os.environ.get("PRICE_FOX_ANTIBOT_HEADLESS", "0").strip().lower() in {
-            "1",
-            "true",
-            "yes",
-        }
+        antibot_headless = False
 
         browser = None
         context = None
@@ -862,6 +1052,7 @@ class Fetcher:
                 url=url,
                 output_dir=output_dir,
                 browser_session_id=f"{browser_session_id}_antibot",
+                scraping_strategy_used="playwright_antibot",
                 logger=active_logger,
             )
         except Exception as exc:
@@ -880,6 +1071,144 @@ class Fetcher:
             try:
                 if browser is not None:
                     browser.close()
+            except Exception:
+                pass
+
+    @staticmethod
+    def _run_jina_fallback_fetch(
+        url: str,
+        output_dir: str,
+        browser_session_id: str,
+        logger: Optional[logging.Logger] = None,
+    ) -> dict:
+        active_logger = logger or logging.getLogger("price_fox")
+        active_logger.warning("🛰️ Running Jina fallback fetch...")
+        fallback_rpm = 20
+
+        try:
+            jina = JinaFetchStrategy(rate_limit_rpm=fallback_rpm, timeout_seconds=45)
+            markdown_content = jina._fetch_markdown(url=url, logger=active_logger)
+            if not markdown_content.strip():
+                raise RuntimeError("Received empty content from Jina fallback")
+            if Fetcher._has_cloudflare_challenge_content(
+                markdown_content, markdown_content
+            ):
+                raise RuntimeError(
+                    "Jina fallback returned Cloudflare challenge text instead of product page"
+                )
+            return JinaFetchStrategy._write_result_files(
+                url=url,
+                output_dir=output_dir,
+                browser_session_id=f"{browser_session_id}_jina",
+                markdown_content=markdown_content,
+                scraping_strategy_used="jina_fallback",
+                logger=active_logger,
+            )
+        except Exception as exc:
+            active_logger.error(f"  ❌ Jina fallback failed: {exc}")
+            return {
+                "url": url,
+                "status": "failed",
+                "error": f"Jina fallback failed: {exc}",
+            }
+
+    @staticmethod
+    def _run_itbox_persistent_chrome_fallback_fetch(
+        playwright,
+        url: str,
+        output_dir: str,
+        browser_session_id: str,
+        logger: Optional[logging.Logger] = None,
+    ) -> dict:
+        active_logger = logger or logging.getLogger("price_fox")
+        active_logger.warning(
+            "🧩 Running itbox persistent Chrome fallback (profile-based)..."
+        )
+
+        profile_dir = ".pricefox-itbox-chrome-profile"
+        challenge_wait_seconds = 240
+        headless = False
+        manual_solve = True
+        context = None
+        try:
+            context = playwright.chromium.launch_persistent_context(
+                user_data_dir=profile_dir,
+                channel="chrome",
+                headless=headless,
+                viewport={"width": 1366, "height": 768},
+                locale="uk-UA",
+                timezone_id="Europe/Kyiv",
+                args=[
+                    "--disable-blink-features=AutomationControlled",
+                    "--disable-dev-shm-usage",
+                    "--start-maximized",
+                ],
+            )
+            page = context.pages[0] if context.pages else context.new_page()
+            page.add_init_script(
+                "Object.defineProperty(navigator, 'webdriver', {get: () => undefined});"
+            )
+            page.set_default_timeout(120000)
+            page.goto(url, wait_until="domcontentloaded", timeout=90000)
+
+            started_at = time.time()
+            challenge_seen = False
+            while time.time() - started_at < challenge_wait_seconds:
+                current_text = page.evaluate("() => document.body.innerText")
+                current_html = page.content()
+                still_challenge = Fetcher._has_cloudflare_challenge_content(
+                    current_text, current_html
+                )
+                if not still_challenge:
+                    active_logger.info(
+                        "  ✓ Persistent Chrome fallback passed Cloudflare challenge."
+                    )
+                    return Fetcher.save_single_page(
+                        page=page,
+                        url=url,
+                        output_dir=output_dir,
+                        browser_session_id=f"{browser_session_id}_itbox_chrome",
+                        scraping_strategy_used="itbox_persistent_chrome",
+                        logger=active_logger,
+                    )
+
+                challenge_seen = True
+                if manual_solve and not headless:
+                    active_logger.warning(
+                        "  ⚠️ Cloudflare challenge is visible. "
+                        "Please solve it in the opened Chrome window; waiting..."
+                    )
+                try:
+                    page.wait_for_load_state("networkidle", timeout=5000)
+                except Exception:
+                    pass
+                time.sleep(4)
+
+            if challenge_seen:
+                return {
+                    "url": url,
+                    "status": "failed",
+                    "error": (
+                        "Persistent Chrome fallback timed out while waiting for "
+                        "Cloudflare challenge clearance"
+                    ),
+                }
+            return {
+                "url": url,
+                "status": "failed",
+                "error": "Persistent Chrome fallback failed unexpectedly",
+            }
+        except Exception as exc:
+            active_logger.error(f"  ❌ Persistent Chrome fallback failed: {exc}")
+            return {
+                "url": url,
+                "status": "failed",
+                "error": f"Persistent Chrome fallback failed: {exc}",
+            }
+        finally:
+            try:
+                if context is not None:
+                    context.close()
             except Exception:
                 pass
 
@@ -933,6 +1262,7 @@ class Fetcher:
                     url,
                     output_dir,
                     browser_session_id,
+                    scraping_strategy_used="playwright",
                     logger=active_logger,
                 )
                 if Fetcher._needs_antibot_fallback(url, result):
@@ -953,6 +1283,44 @@ class Fetcher:
                         active_logger.warning(
                             "  ⚠️ Anti-bot fallback did not resolve blocking."
                         )
+                        if Fetcher._is_itbox_url(url):
+                            active_logger.warning(
+                                "  ⚠️ Trying itbox.ua persistent Chrome fallback."
+                            )
+                            chrome_fallback_result = (
+                                Fetcher._run_itbox_persistent_chrome_fallback_fetch(
+                                    playwright=p,
+                                    url=url,
+                                    output_dir=output_dir,
+                                    browser_session_id=browser_session_id,
+                                    logger=active_logger,
+                                )
+                            )
+                            if chrome_fallback_result.get("status") == "success":
+                                active_logger.info(
+                                    "  ✓ Persistent Chrome fallback succeeded."
+                                )
+                                result = chrome_fallback_result
+                            else:
+                                active_logger.warning(
+                                    "  ⚠️ Persistent Chrome fallback did not resolve blocking."
+                                )
+                                active_logger.warning(
+                                    "  ⚠️ Trying itbox.ua Jina fallback after browser blocking."
+                                )
+                                jina_fallback_result = Fetcher._run_jina_fallback_fetch(
+                                    url=url,
+                                    output_dir=output_dir,
+                                    browser_session_id=browser_session_id,
+                                    logger=active_logger,
+                                )
+                                if jina_fallback_result.get("status") == "success":
+                                    active_logger.info("  ✓ Jina fallback succeeded.")
+                                    result = jina_fallback_result
+                                else:
+                                    active_logger.warning(
+                                        "  ⚠️ Jina fallback did not resolve blocking."
+                                    )
                 results.append(result)
 
                 # Delay between pages (be nice to servers)
@@ -1035,6 +1403,99 @@ class Fetcher:
         result["metadata"] = str(metadata_target)
         return result
 
+    @staticmethod
+    def _normalize_fetch_strategy_name(strategy_name: Optional[str]) -> str:
+        normalized = (strategy_name or "").strip().lower().replace("-", "_")
+        if normalized == "jina":
+            return "jina"
+        if normalized in {"gemini", "gemini_url"}:
+            return "gemini_url"
+        return "playwright"
+
+    @staticmethod
+    def _normalize_host(url: Optional[str]) -> str:
+        if not url:
+            return ""
+        return (urlparse(url).hostname or "").strip().lower()
+
+    @staticmethod
+    def _to_positive_int(value: Optional[str], fallback: int) -> int:
+        try:
+            parsed = int(str(value).strip())
+        except Exception:
+            return fallback
+        return parsed if parsed > 0 else fallback
+
+    def _load_strategy_settings(self) -> dict[str, str]:
+        db_path = self.configuration.product_catalog_db_path
+        if not db_path:
+            return {}
+        try:
+            repository = PriceStrategyRepository(db_path)
+            return repository.load_settings()
+        except Exception as exc:
+            self.configuration.logger.warning(
+                f"Unable to load fetch strategy settings from DB '{db_path}': {exc}"
+            )
+            return {}
+
+    def _jina_rate_limit_rpm(self) -> int:
+        raw_value = self._strategy_settings.get("jina_rate_limit_rpm")
+        return self._to_positive_int(raw_value, fallback=20)
+
+    def _load_site_fetch_strategy_overrides(self) -> dict[str, str]:
+        db_path = self.configuration.product_catalog_db_path
+        if not db_path:
+            return {}
+        try:
+            repository = PriceStrategyRepository(db_path)
+            raw_mapping = repository.load_domain_strategy_overrides()
+        except Exception as exc:
+            self.configuration.logger.warning(
+                f"Unable to load fetch strategy domains from DB '{db_path}': {exc}"
+            )
+            return {}
+
+        normalized: dict[str, str] = {}
+        for domain, strategy_name in raw_mapping.items():
+            domain_key = str(domain or "").strip().lower()
+            if not domain_key:
+                continue
+            normalized[domain_key] = self._normalize_fetch_strategy_name(strategy_name)
+        return normalized
+
+    def _resolve_fetch_strategy(
+        self,
+        url: str,
+        site_overrides: dict[str, str],
+        default_strategy: str,
+    ) -> str:
+        host = self._normalize_host(url)
+        if not host:
+            return default_strategy
+        if host in site_overrides:
+            return site_overrides[host]
+
+        best_suffix = ""
+        best_strategy = default_strategy
+        for suffix, strategy in site_overrides.items():
+            normalized_suffix = suffix.lstrip(".")
+            if not normalized_suffix:
+                continue
+            if host == normalized_suffix or host.endswith(f".{normalized_suffix}"):
+                if len(normalized_suffix) > len(best_suffix):
+                    best_suffix = normalized_suffix
+                    best_strategy = strategy
+        return best_strategy
+
+    def _build_fetch_strategy(self, strategy_name: str) -> FetchStrategy:
+        normalized = self._normalize_fetch_strategy_name(strategy_name)
+        if normalized == "gemini_url":
+            return GeminiUrlFetchStrategy()
+        if normalized == "jina":
+            return JinaFetchStrategy(rate_limit_rpm=self._jina_rate_limit_rpm())
+        return PlaywrightFetchStrategy()
+
     def execute(self):
         self.scrape_session.fetch_start_datetime = datetime.today()
         data_root = self._prepare_output_path()
@@ -1056,27 +1517,53 @@ class Fetcher:
             self.scrape_session.fetch_end_datetime = datetime.today()
             return []
 
-        urls = [job["url"] for job in jobs]
-        strategy_name = (self.configuration.fetch_strategy or "playwright").lower()
-        if strategy_name == "jina":
-            fetch_strategy: FetchStrategy = JinaFetchStrategy(
-                rate_limit_rpm=self.configuration.jina_rate_limit_rpm
-            )
-        else:
-            fetch_strategy = PlaywrightFetchStrategy()
-
+        default_strategy = self._normalize_fetch_strategy_name(
+            self._strategy_settings.get("default_fetch_strategy", "playwright")
+        )
+        site_overrides = self._load_site_fetch_strategy_overrides()
         self.configuration.logger.info(
-            f"Using fetch strategy: {strategy_name} "
-            f"(jina_rate_limit_rpm={self.configuration.jina_rate_limit_rpm})"
+            f"Using DB-configurable fetch strategies "
+            f"(default={default_strategy}, jina_rate_limit_rpm={self._jina_rate_limit_rpm()})"
         )
-        raw_results = fetch_strategy.fetch_batch(
-            urls=urls,
-            output_dir=str(data_root),
-            logger=self.configuration.logger,
-        )
+
+        jobs_by_strategy: dict[str, list[tuple[int, dict]]] = {}
+        for index, job in enumerate(jobs):
+            strategy = self._resolve_fetch_strategy(
+                url=job["url"],
+                site_overrides=site_overrides,
+                default_strategy=default_strategy,
+            )
+            self.configuration.logger.info(
+                f"Planned fetch strategy for url_id={job['url_id']} "
+                f"({job['url']}): {strategy}"
+            )
+            jobs_by_strategy.setdefault(strategy, []).append((index, job))
+
+        raw_results_by_index: dict[int, dict] = {}
+        for strategy_name, indexed_jobs in jobs_by_strategy.items():
+            strategy_urls = [job["url"] for _, job in indexed_jobs]
+            fetch_strategy = self._build_fetch_strategy(strategy_name)
+            self.configuration.logger.info(
+                f"Fetching {len(strategy_urls)} URL(s) with strategy '{strategy_name}'"
+            )
+            strategy_results = fetch_strategy.fetch_batch(
+                urls=strategy_urls,
+                output_dir=str(data_root),
+                logger=self.configuration.logger,
+            )
+            for (index, _), result in zip(indexed_jobs, strategy_results):
+                raw_results_by_index[index] = result
 
         all_results = []
-        for job, result in zip(jobs, raw_results):
+        for index, job in enumerate(jobs):
+            result = raw_results_by_index.get(
+                index,
+                {
+                    "url": job["url"],
+                    "status": "failed",
+                    "error": "Missing fetch result for resolved strategy batch",
+                },
+            )
             output_dir = self._product_url_output_dir(
                 data_root=data_root,
                 product_id=job["product_id"],

@@ -124,6 +124,7 @@ class JinaFetchStrategy(FetchStrategy):
             "reliability_score": None,
             "wait_time": None,
             "fetch_attempts": 1,
+            "scraping_strategy_used": "jina",
             "fetch_strategy": "jina",
             "source_endpoint": "https://r.jina.ai/",
         }

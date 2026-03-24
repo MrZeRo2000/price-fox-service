@@ -62,9 +62,23 @@ class ProductCatalogRepository:
 
     @staticmethod
     def _fetch_url_ids_by_product(connection: sqlite3.Connection) -> dict[int, list[int]]:
-        rows = connection.execute(
-            "SELECT product_id, url_id FROM product_urls ORDER BY product_id, url_id"
-        ).fetchall()
+        columns = {
+            row[1]
+            for row in connection.execute("PRAGMA table_info(product_urls)").fetchall()
+        }
+        if "is_active" in columns:
+            rows = connection.execute(
+                """
+                SELECT product_id, url_id
+                FROM product_urls
+                WHERE is_active = 1
+                ORDER BY product_id, url_id
+                """
+            ).fetchall()
+        else:
+            rows = connection.execute(
+                "SELECT product_id, url_id FROM product_urls ORDER BY product_id, url_id"
+            ).fetchall()
         mapping: dict[int, list[int]] = {}
         for product_id, url_id in rows:
             mapping.setdefault(product_id, []).append(url_id)
