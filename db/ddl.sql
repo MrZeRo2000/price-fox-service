@@ -34,6 +34,14 @@ CREATE TABLE "scrape_consolidated" (
                             PRIMARY KEY (session_date, product_id)
                         );
 
+CREATE TABLE "scrape_analysis" (
+                            product_id INTEGER NOT NULL,
+                            url_id INTEGER NOT NULL,
+                            url TEXT NOT NULL,
+                            value INTEGER,
+                            diff INTEGER
+                        );
+
 CREATE TABLE "scrape_detailed" (
                             session_date INTEGER NOT NULL,
                             product_id INTEGER NOT NULL,
