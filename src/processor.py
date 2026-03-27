@@ -36,7 +36,8 @@ class ScrapeConsolidatedProcessor:
                 self._create_table_if_missing(connection)
 
                 deleted_rows = connection.execute(
-                    f"DELETE FROM {self.TABLE_NAME}"
+                    f"DELETE FROM {self.TABLE_NAME} WHERE session_date = ?",
+                    (session_date,),
                 ).rowcount
 
                 connection.execute(
@@ -60,7 +61,7 @@ class ScrapeConsolidatedProcessor:
                                 ORDER BY parsed_value
                             ) AS rn
                         FROM scrape_detailed
-                        WHERE session_date = ?
+                        WHERE session_date = ? AND parsed_status = 1
                     )
                     SELECT
                         session_date,
