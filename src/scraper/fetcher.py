@@ -628,11 +628,18 @@ class Fetcher:
                     page.goto(url, wait_until="domcontentloaded", timeout=60000)
 
                 if Fetcher._is_itbox_url(url):
-                    Fetcher._wait_out_itbox_cloudflare_challenge(
+                    challenge_cleared = Fetcher._wait_out_itbox_cloudflare_challenge(
                         page=page,
                         url=url,
                         logger=active_logger,
                     )
+                    if not challenge_cleared:
+                        raise RuntimeError(
+                            "Cloudflare challenge persisted on itbox.ua; "
+                            "browser fetch could not continue"
+                        )
+
+                Fetcher._dismiss_blocking_modals(page, logger=active_logger)
 
                 # Quick pre-check to avoid long waits on known blocked pages.
                 quick_html = page.content()
@@ -658,6 +665,7 @@ class Fetcher:
 
                 # Extract content
                 active_logger.info("📦 Extracting content...")
+                Fetcher._dismiss_blocking_modals(page, logger=active_logger)
                 html_content = page.content()
                 text_content = page.evaluate("() => document.body.innerText")
                 text_length = len(text_content.strip())
@@ -759,27 +767,68 @@ class Fetcher:
 
     @staticmethod
     def _has_cloudflare_challenge_content(text_content: str, html_content: str) -> bool:
-        combined = f"{text_content}\n{html_content}".lower()
-        cloudflare_markers = (
-            "performance and security by cloudflare",
+        visible_text = (text_content or "").lower()
+        html_lower = (html_content or "").lower()
+
+        strong_text_markers = (
             "verify you are not a bot",
             "this website uses a security service to protect against malicious bots",
-            "ray id:",
             "checking your browser before accessing",
             "just a moment...",
-            "cloudflare",
+            "ray id:",
+            "attention required! | cloudflare",
+        )
+        if any(marker in visible_text for marker in strong_text_markers):
+            return True
+
+        html_markers = (
             "cf-browser-verification",
             "cf-challenge",
             "cf_turnstile",
+            "challenges.cloudflare.com",
+            "__cf_chl_",
+            "data-ray=",
         )
-        return any(marker in combined for marker in cloudflare_markers)
+        if any(marker in html_lower for marker in html_markers):
+            return True
+
+        weak_text_markers = (
+            "performance and security by cloudflare",
+            "cloudflare",
+        )
+        weak_hits = sum(marker in visible_text for marker in weak_text_markers)
+        return weak_hits >= 2
+
+    @staticmethod
+    def _has_readable_page_content(text_content: str) -> bool:
+        normalized = " ".join((text_content or "").split()).lower()
+        if len(normalized) < 300:
+            return False
+        if len(normalized) > 1400:
+            return True
+
+        product_markers = (
+            "купить",
+            "ціна",
+            "цена",
+            "грн",
+            "₴",
+            "характеристики",
+            "описание",
+            "опис",
+            "доставка",
+            "в наличии",
+            "в наявності",
+        )
+        marker_hits = sum(marker in normalized for marker in product_markers)
+        return marker_hits >= 2
 
     @staticmethod
     def _wait_out_itbox_cloudflare_challenge(
         page,
         url: str,
         logger: Optional[logging.Logger] = None,
-        max_wait_seconds: int = 90,
+        max_wait_seconds: int = 30,
     ) -> bool:
         active_logger = logger or logging.getLogger("price_fox")
         if not Fetcher._is_itbox_url(url):
@@ -788,13 +837,14 @@ class Fetcher:
         started_at = time.time()
         check_interval_seconds = 3
         challenge_seen = False
+        next_interaction_at = started_at
         first_check_text = page.evaluate("() => document.body.innerText")
         first_check_html = page.content()
         is_challenged = Fetcher._has_cloudflare_challenge_content(
             first_check_text, first_check_html
         )
         if not is_challenged:
-            return False
+            return True
 
         challenge_seen = True
         active_logger.warning(
@@ -802,6 +852,11 @@ class Fetcher:
         )
 
         while time.time() - started_at < max_wait_seconds:
+            now = time.time()
+            # Excessive interaction can restart Cloudflare checks. Keep this sparse.
+            if now >= next_interaction_at:
+                Fetcher._try_interact_with_cloudflare_widget(page, logger=active_logger)
+                next_interaction_at = now + 18
             # Human-like interaction and idle wait can help JS challenges complete.
             try:
                 page.mouse.move(320, 260)
@@ -823,19 +878,52 @@ class Fetcher:
                 )
                 return True
 
-            # Refresh once midway to re-trigger scripts if needed.
-            elapsed = time.time() - started_at
-            if 15 <= elapsed <= 20:
-                try:
-                    page.reload(wait_until="domcontentloaded", timeout=60000)
-                except Exception:
-                    pass
-
         if challenge_seen:
             active_logger.warning(
                 "  ⚠️ itbox.ua Cloudflare challenge did not clear within timeout."
             )
-        return challenge_seen
+        return False
+
+    @staticmethod
+    def _try_interact_with_cloudflare_widget(
+        page, logger: Optional[logging.Logger] = None
+    ) -> bool:
+        active_logger = logger or logging.getLogger("price_fox")
+        selectors = (
+            "label.ctp-checkbox-label",
+            "input[type='checkbox']",
+            "[role='checkbox']",
+            ".ctp-checkbox",
+            "button[type='submit']",
+            "button:has-text('Verify')",
+            "button:has-text('Підтвердити')",
+        )
+
+        for frame in page.frames:
+            frame_url = (frame.url or "").lower()
+            frame_name = (frame.name or "").lower()
+            if (
+                "cloudflare" not in frame_url
+                and "challenge" not in frame_url
+                and "turnstile" not in frame_url
+                and "cloudflare" not in frame_name
+            ):
+                continue
+
+            for selector in selectors:
+                try:
+                    locator = frame.locator(selector).first
+                    if locator.is_visible(timeout=500):
+                        locator.click(timeout=2000, force=True)
+                        active_logger.info(
+                            f"  ✓ Attempted Cloudflare widget interaction via: {selector}"
+                        )
+                        time.sleep(0.8)
+                        return True
+                except Exception:
+                    continue
+
+        return False
 
     @staticmethod
     def _has_access_denied_content(text_content: str, html_content: str) -> bool:
@@ -994,6 +1082,157 @@ class Fetcher:
             return False
 
     @staticmethod
+    def _dismiss_blocking_modals(
+        page, logger: Optional[logging.Logger] = None
+    ) -> bool:
+        active_logger = logger or logging.getLogger("price_fox")
+        active_logger.info("🧹 Checking for blocking modal windows...")
+
+        modal_selectors = (
+            "[aria-modal='true']",
+            "[role='dialog']",
+            "[class*='modal' i]",
+            "[id*='modal' i]",
+            "[class*='popup' i]",
+            "[id*='popup' i]",
+            "[class*='overlay' i]",
+            "[class*='backdrop' i]",
+            "[id*='overlay' i]",
+            "[class*='fancybox' i]",
+            "[class*='city' i][class*='select' i]",
+        )
+        close_selectors = (
+            "button[aria-label*='close' i]",
+            "button[title*='close' i]",
+            "button[class*='close' i]",
+            "button[id*='close' i]",
+            "[role='button'][aria-label*='close' i]",
+            "[data-testid*='close' i]",
+            "[class*='close' i]",
+            "[id*='close' i]",
+            ".modal-close",
+            ".popup-close",
+            ".js-popup-close",
+            ".fancybox-close",
+            ".fancybox-button--close",
+            ".mfp-close",
+        )
+        close_texts = (
+            "Close",
+            "Dismiss",
+            "No thanks",
+            "Not now",
+            "Skip",
+            "Закрити",
+            "Закрыть",
+            "Не зараз",
+            "Ні, дякую",
+            "Пізніше",
+            "Позже",
+            "Пропустить",
+        )
+
+        dismissed = False
+
+        for selector in close_selectors:
+            try:
+                locator = page.locator(selector).first
+                if locator.is_visible(timeout=1000):
+                    locator.click(timeout=2000, force=True)
+                    dismissed = True
+            except Exception:
+                continue
+
+        for text in close_texts:
+            try:
+                button = page.get_by_role("button", name=text, exact=False).first
+                if button.is_visible(timeout=700):
+                    button.click(timeout=1500, force=True)
+                    dismissed = True
+            except Exception:
+                continue
+
+        for selector in modal_selectors:
+            try:
+                modal = page.locator(selector).first
+                if modal.is_visible(timeout=500):
+                    modal.press("Escape", timeout=500)
+                    dismissed = True
+            except Exception:
+                continue
+
+        # Last-resort JS cleanup for full-screen overlays that trap scrolling/clicks.
+        # Keep this conservative by targeting dialog-like and overlay-like elements only.
+        try:
+            removed_any = bool(
+                page.evaluate(
+                    """
+                    () => {
+                        const looksBlocking = (el) => {
+                            if (!(el instanceof HTMLElement)) return false;
+                            const style = window.getComputedStyle(el);
+                            if (!style) return false;
+
+                            const isVisible = style.display !== "none"
+                                && style.visibility !== "hidden"
+                                && parseFloat(style.opacity || "1") > 0.05;
+                            if (!isVisible) return false;
+
+                            const pos = style.position;
+                            const isOverlayPosition = pos === "fixed" || pos === "sticky";
+                            if (!isOverlayPosition) return false;
+
+                            const z = Number.parseInt(style.zIndex || "0", 10);
+                            const highZ = Number.isFinite(z) && z >= 100;
+                            if (!highZ) return false;
+
+                            const rect = el.getBoundingClientRect();
+                            const viewportArea = window.innerWidth * window.innerHeight;
+                            const area = Math.max(0, rect.width) * Math.max(0, rect.height);
+                            const coversViewport = viewportArea > 0 && area / viewportArea > 0.30;
+                            if (!coversViewport) return false;
+
+                            const attrs = `${el.id} ${el.className} ${el.getAttribute("role") || ""} ${el.getAttribute("aria-modal") || ""}`.toLowerCase();
+                            return (
+                                attrs.includes("modal")
+                                || attrs.includes("popup")
+                                || attrs.includes("overlay")
+                                || attrs.includes("backdrop")
+                                || attrs.includes("dialog")
+                                || attrs.includes("cookie")
+                                || attrs.includes("consent")
+                                || attrs.includes("city")
+                            );
+                        };
+
+                        let removed = false;
+                        for (const el of document.querySelectorAll("div, section, aside, dialog")) {
+                            if (looksBlocking(el)) {
+                                el.remove();
+                                removed = true;
+                            }
+                        }
+
+                        if (removed) {
+                            document.body.style.overflow = "auto";
+                            document.documentElement.style.overflow = "auto";
+                        }
+                        return removed;
+                    }
+                    """
+                )
+            )
+            dismissed = dismissed or removed_any
+        except Exception:
+            pass
+
+        if dismissed:
+            active_logger.info("  ✓ Dismissed one or more blocking modal windows.")
+        else:
+            active_logger.info("  ℹ️ No blocking modal windows detected.")
+        return dismissed
+
+    @staticmethod
     def _needs_antibot_fallback(url: str, result: dict) -> bool:
         if result.get("status") != "failed":
             return False
@@ -1126,7 +1365,7 @@ class Fetcher:
         )
 
         profile_dir = ".pricefox-itbox-chrome-profile"
-        challenge_wait_seconds = 240
+        challenge_wait_seconds = 120
         headless = False
         manual_solve = True
         context = None
@@ -1153,9 +1392,33 @@ class Fetcher:
 
             started_at = time.time()
             challenge_seen = False
+            next_interaction_at = started_at
+            next_manual_notice_at = started_at
             while time.time() - started_at < challenge_wait_seconds:
+                now = time.time()
+                if now >= next_interaction_at:
+                    Fetcher._try_interact_with_cloudflare_widget(
+                        page=page, logger=active_logger
+                    )
+                    next_interaction_at = now + 18
+                Fetcher._dismiss_blocking_modals(page, logger=active_logger)
                 current_text = page.evaluate("() => document.body.innerText")
                 current_html = page.content()
+                if (
+                    Fetcher._has_readable_page_content(current_text)
+                    and not Fetcher._has_access_denied_content(current_text, current_html)
+                ):
+                    active_logger.info(
+                        "  ✓ Product-like readable content detected in persistent tab."
+                    )
+                    return Fetcher.save_single_page(
+                        page=page,
+                        url=url,
+                        output_dir=output_dir,
+                        browser_session_id=f"{browser_session_id}_itbox_chrome",
+                        scraping_strategy_used="itbox_persistent_chrome",
+                        logger=active_logger,
+                    )
                 still_challenge = Fetcher._has_cloudflare_challenge_content(
                     current_text, current_html
                 )
@@ -1173,11 +1436,12 @@ class Fetcher:
                     )
 
                 challenge_seen = True
-                if manual_solve and not headless:
+                if manual_solve and not headless and now >= next_manual_notice_at:
                     active_logger.warning(
                         "  ⚠️ Cloudflare challenge is visible. "
                         "Please solve it in the opened Chrome window; waiting..."
                     )
+                    next_manual_notice_at = now + 20
                 try:
                     page.wait_for_load_state("networkidle", timeout=5000)
                 except Exception:

@@ -12,13 +12,13 @@ CREATE TABLE product_categories (
     );
 
 CREATE TABLE "product_urls" (
-                            product_id INTEGER NOT NULL,
-                            url_id INTEGER NOT NULL,
-                            is_active INTEGER NOT NULL DEFAULT 1 CHECK (is_active IN (0, 1)),
-                            PRIMARY KEY (product_id, url_id),
-                            FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE CASCADE,
-                            FOREIGN KEY (url_id) REFERENCES urls(id) ON DELETE CASCADE
-                        );
+                    product_id INTEGER NOT NULL,
+                    url_id INTEGER NOT NULL,
+                    is_active INTEGER NOT NULL DEFAULT 1 CHECK (is_active IN (0, 1)),
+                    PRIMARY KEY (product_id, url_id),
+                    FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE CASCADE,
+                    FOREIGN KEY (url_id) REFERENCES urls(id) ON DELETE CASCADE
+                );
 
 CREATE TABLE products (
         id INTEGER PRIMARY KEY,
@@ -43,6 +43,23 @@ CREATE TABLE "scrape_detailed" (
                             parsed_value INTEGER
                         );
 
+CREATE TABLE strategies (
+                    id INTEGER PRIMARY KEY,
+                    strategy_name TEXT NOT NULL UNIQUE
+                );
+
+CREATE TABLE strategy_domains (
+                    id INTEGER PRIMARY KEY,
+                    domain TEXT NOT NULL UNIQUE,
+                    strategy_id INTEGER NOT NULL,
+                    FOREIGN KEY (strategy_id) REFERENCES strategies(id)
+                );
+
+CREATE TABLE strategy_settings (
+    setting_key TEXT PRIMARY KEY,
+    setting_value TEXT NOT NULL
+);
+
 CREATE TABLE urls (
                         id INTEGER PRIMARY KEY,
                         url TEXT NOT NULL UNIQUE
@@ -50,3 +67,6 @@ CREATE TABLE urls (
 
 CREATE INDEX idx_scrape_detailed_session_date
                         ON scrape_detailed (session_date);
+
+CREATE INDEX idx_strategy_domains_domain
+                ON strategy_domains (domain);

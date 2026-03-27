@@ -6,8 +6,8 @@ INSERT INTO urls (id, url) VALUES (5, 'https://epicentrk.ua/shop/pralnyi-porosho
 INSERT INTO urls (id, url) VALUES (6, 'https://epicentrk.ua/shop/pralnyi-poroshok-dlia-mashynnoho-prannia-ariel-akva-pudra-touch-of-lenor-2-7-kh.html');
 INSERT INTO urls (id, url) VALUES (7, 'https://www.watsons.ua/uk/c/krem-dlya-golinnya-nivea-men-dlya-chutlivoyi-shkiri-100-ml/p/BP_746387');
 INSERT INTO urls (id, url) VALUES (8, 'https://eva.ua/ua/pr18660');
-INSERT INTO urls (id, url) VALUES (9, 'https://www.itbox.ua/ru/product/Sredstvo_dlya_mitya_posudi_Finish_dlya_posudomoechnih_mashin_1_kg_5900627003116-p219055');
+INSERT INTO urls (id, url) VALUES (9, 'https://www.itbox.ua/product/Sredstvo_dlya_mitya_posudi_Finish_dlya_posudomoechnih_mashin_1_kg_5900627003116-p219055');
 INSERT INTO urls (id, url) VALUES (10, 'https://epicentrk.ua/shop/mylo-palmolive-naturel-olyvka-ta-molochko-intensyvne-zvolozhennia-90-h.html');
-INSERT INTO urls (id, url) VALUES (11, 'https://www.itbox.ua/ru/product/Tverdoe_milo_Palmolive_Naturals_Moisture_Care_Olivka_i_molochko_90_g_8693495033985-p1032126/');
+INSERT INTO urls (id, url) VALUES (11, 'https://www.itbox.ua/product/Tverdoe_milo_Palmolive_Naturals_Moisture_Care_Olivka_i_molochko_90_g_8693495033985-p1032126/');
 INSERT INTO urls (id, url) VALUES (12, 'https://www.watsons.ua/ru/telo/kosmetika-dlya-vanny-i-dusha/mylo-tverdoe-/tualetnoe-mylo-palmolive-naturals-moisture-care-olivka-i-molochko-90-g/p/BP_1396764');
 INSERT INTO urls (id, url) VALUES (13, 'https://www.watsons.ua/ru/dom/sredstva-dlya-uborki/sprey-dlya-vannoy-komnaty-domol-750-ml/p/BP_183006');
