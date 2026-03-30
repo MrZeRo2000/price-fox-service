@@ -1,7 +1,7 @@
 from playwright.sync_api import sync_playwright
 import sys
 
-from app_logger import create_application_logger
+from logger import create_application_logger
 from config.settings import default_data_path
 
 

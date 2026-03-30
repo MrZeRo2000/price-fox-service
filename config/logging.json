@@ -1,0 +1,39 @@
+{
+  "logger_name": "price_fox.{log_file_path_lower}",
+  "logs_root": "{project_root}/log",
+  "dict_config": {
+    "version": 1,
+    "disable_existing_loggers": false,
+    "formatters": {
+      "standard": {
+        "format": "%(asctime)s | %(levelname)s | %(message)s",
+        "datefmt": "%Y-%m-%d %H:%M:%S"
+      }
+    },
+    "handlers": {
+      "console": {
+        "class": "logging.StreamHandler",
+        "level": "INFO",
+        "formatter": "standard",
+        "stream": "ext://sys.stdout"
+      },
+      "file": {
+        "class": "logging.FileHandler",
+        "level": "INFO",
+        "formatter": "standard",
+        "filename": "{log_file_path}",
+        "encoding": "utf-8"
+      }
+    },
+    "loggers": {
+      "{logger_name}": {
+        "level": "INFO",
+        "handlers": [
+          "console",
+          "file"
+        ],
+        "propagate": false
+      }
+    }
+  }
+}

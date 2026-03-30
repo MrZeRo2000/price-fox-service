@@ -20,10 +20,20 @@ class ScrapeDetailedRepository:
     def replace_session_rows(
         self,
         session_date: int,
-        rows: list[tuple[int, int, int, str, int, Optional[int]]],
+        rows: list[tuple[int, int, int, str, int, Optional[int], Optional[str]]],
     ) -> dict:
         try:
             with sqlite3.connect(self._db_path) as connection:
+                # Backfill older DBs that were created before parse_error existed.
+                table_columns = {
+                    row[1]
+                    for row in connection.execute(f"PRAGMA table_info({self.TABLE_NAME})").fetchall()
+                }
+                if table_columns and "parse_error" not in table_columns:
+                    connection.execute(
+                        f"ALTER TABLE {self.TABLE_NAME} ADD COLUMN parse_error TEXT"
+                    )
+
                 deleted_rows = connection.execute(
                     f"DELETE FROM {self.TABLE_NAME} WHERE session_date = ?",
                     (session_date,),
@@ -31,8 +41,8 @@ class ScrapeDetailedRepository:
                 connection.executemany(
                     (
                         f"INSERT INTO {self.TABLE_NAME} "
-                        "(session_date, product_id, url_id, url, parsed_status, parsed_value) "
-                        "VALUES (?, ?, ?, ?, ?, ?)"
+                        "(session_date, product_id, url_id, url, parsed_status, parsed_value, parse_error) "
+                        "VALUES (?, ?, ?, ?, ?, ?, ?)"
                     ),
                     rows,
                 )

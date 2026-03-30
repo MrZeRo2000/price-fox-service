@@ -45,14 +45,14 @@ class ScrapeDetailedCollector:
 
     def collect_latest_session_rows(
         self,
-    ) -> tuple[Optional[int], list[tuple[int, int, int, str, int, Optional[int]]]]:
+    ) -> tuple[Optional[int], list[tuple[int, int, int, str, int, Optional[int], Optional[str]]]]:
         latest_session_folder = self._resolve_latest_session_folder()
         if latest_session_folder is None:
             self._logger.info("No scrape session folders found in data/scrape.")
             return None, []
 
         session_date = self._to_session_date(latest_session_folder.name)
-        rows: list[tuple[int, int, int, str, int, Optional[int]]] = []
+        rows: list[tuple[int, int, int, str, int, Optional[int], Optional[str]]] = []
 
         for product_folder in sorted([item for item in latest_session_folder.iterdir() if item.is_dir()]):
             if not product_folder.name.isdigit():
@@ -85,6 +85,7 @@ class ScrapeDetailedCollector:
                         str(metadata.get("url") or "").strip(),
                         self._to_parsed_status(parsed.get("status")),
                         self._to_parsed_value(parsed.get("price")),
+                        str(parsed.get("error")).strip() if parsed.get("error") is not None else None,
                     )
                 )
 

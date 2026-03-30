@@ -28,7 +28,7 @@ def main() -> int:
     config = load_turso_sync_configuration(config_path=args.turso_config_path)
     sync_client = TursoSyncClient(config=config, db_path=args.db_path)
     try:
-        result = sync_client.push_to_remote()
+        result = sync_client.replace_remote_with_local()
     except (RuntimeError, ValueError) as exc:
         print(f"Initial load failed: {exc}")
         return 1

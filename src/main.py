@@ -6,10 +6,11 @@ from datetime import datetime
 from pathlib import Path
 
 from application import persist_latest_scrape_results, run_pipeline
-from app_logger import create_application_logger
+from logger import create_application_logger
 from cfg import Configuration
 from config.settings import resolve_configuration_settings
 from turso_sync import TursoSyncClient, load_turso_sync_configuration
+from version import APP_VERSION
 
 
 def _log_resolved_configuration(
@@ -97,6 +98,7 @@ def main() -> int:
     )
     resolved_data_path = resolved_settings.data_path
     logger = create_application_logger(data_path=resolved_data_path)
+    logger.info(f"Price Fox version: {APP_VERSION}")
 
     try:
         turso_sync_client = None

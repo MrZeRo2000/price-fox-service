@@ -48,7 +48,8 @@ CREATE TABLE "scrape_detailed" (
                             url_id INTEGER NOT NULL,
                             url TEXT NOT NULL,
                             parsed_status INTEGER NOT NULL,
-                            parsed_value INTEGER
+                            parsed_value INTEGER,
+                            parse_error TEXT
                         );
 
 CREATE TABLE strategies (

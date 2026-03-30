@@ -1,7 +1,7 @@
 import os
 from dataclasses import dataclass
 
-from app_logger import create_application_logger
+from logger import create_application_logger
 from config.catalog_loader import load_catalog_from_database, load_catalog_from_json
 from config.settings import resolve_configuration_settings
 from models import CatalogData

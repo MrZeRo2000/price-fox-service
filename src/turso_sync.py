@@ -76,6 +76,36 @@ class TursoSyncClient:
     def push_to_remote(self) -> dict:
         return self._sync(direction="push")
 
+    def replace_remote_with_local(self) -> dict:
+        """
+        Force remote Turso DB to match local SQLite exactly.
+        Drops remote user objects and uploads full local dump.
+        """
+        if not self._config.enabled:
+            return {
+                "status": "skipped",
+                "direction": "push",
+                "reason": "disabled",
+            }
+        if not self._config.is_ready:
+            raise ValueError(
+                f"Turso is enabled, but url/auth_token are missing in '{self._config.config_path}'."
+            )
+        os.makedirs(os.path.dirname(self._db_path), exist_ok=True)
+
+        _push_local_sqlite_to_remote(
+            db_path=self._db_path,
+            sync_url=self._config.url,
+            auth_token=self._config.auth_token,
+        )
+        return {
+            "status": "success",
+            "direction": "push",
+            "mode": "direct_upload",
+            "db_path": self._db_path,
+            "remote_url": self._config.url,
+        }
+
     def _sync(self, direction: str) -> dict:
         if not self._config.enabled:
             return {
