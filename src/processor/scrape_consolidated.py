@@ -16,25 +16,9 @@ class ScrapeConsolidatedProcessor:
     def db_path(self) -> str:
         return self._db_path
 
-    def _create_table_if_missing(self, connection: sqlite3.Connection) -> None:
-        connection.execute(
-            f"""
-            CREATE TABLE IF NOT EXISTS {self.TABLE_NAME} (
-                session_date INTEGER NOT NULL,
-                product_id INTEGER NOT NULL,
-                best_url_id INTEGER NOT NULL,
-                best_url TEXT NOT NULL,
-                best_value INTEGER,
-                PRIMARY KEY (session_date, product_id)
-            )
-            """
-        )
-
     def replace_for_session(self, session_date: int) -> dict:
         try:
             with sqlite3.connect(self._db_path) as connection:
-                self._create_table_if_missing(connection)
-
                 deleted_rows = connection.execute(
                     f"DELETE FROM {self.TABLE_NAME} WHERE session_date = ?",
                     (session_date,),

@@ -1,6 +1,10 @@
 from cfg import Configuration
 from collector import ScrapeDetailedCollector
-from processor import ScrapeAnalysisProcessor, ScrapeConsolidatedProcessor
+from processor import (
+    ScrapeAnalysisProcessor,
+    ScrapeConsolidatedProcessor,
+    ScrapeStatsProcessor,
+)
 from repositories import ScrapeDetailedRepository
 
 
@@ -16,6 +20,7 @@ def persist_latest_scrape_results(configuration: Configuration) -> dict:
             "saved_rows": 0,
             "consolidated": None,
             "analysis": None,
+            "stats": None,
         }
 
     scrape_detailed_collector = ScrapeDetailedCollector(
@@ -31,6 +36,7 @@ def persist_latest_scrape_results(configuration: Configuration) -> dict:
             "saved_rows": 0,
             "consolidated": None,
             "analysis": None,
+            "stats": None,
         }
 
     scrape_detailed_repository = ScrapeDetailedRepository(
@@ -50,6 +56,10 @@ def persist_latest_scrape_results(configuration: Configuration) -> dict:
         db_path=configuration.product_catalog_db_path
     )
     analysis_results = scrape_analysis_processor.refresh()
+    scrape_stats_processor = ScrapeStatsProcessor(
+        db_path=configuration.product_catalog_db_path
+    )
+    stats_results = scrape_stats_processor.refresh()
     logger.info(
         f"Persisted scrape session_date={persisted_results['session_date']} "
         f"(deleted={persisted_results['deleted_rows']}, saved={persisted_results['saved_rows']})."
@@ -62,10 +72,15 @@ def persist_latest_scrape_results(configuration: Configuration) -> dict:
         f"Refreshed scrape_analysis (deleted={analysis_results['deleted_rows']}, "
         f"saved={analysis_results['saved_rows']})."
     )
+    logger.info(
+        f"Refreshed scrape_stats (deleted={stats_results['deleted_rows']}, "
+        f"saved={stats_results['saved_rows']})."
+    )
     return {
         "session_date": persisted_results["session_date"],
         "deleted_rows": persisted_results["deleted_rows"],
         "saved_rows": persisted_results["saved_rows"],
         "consolidated": consolidated_results,
         "analysis": analysis_results,
+        "stats": stats_results,
     }

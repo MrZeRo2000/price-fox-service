@@ -17,38 +17,6 @@ class PriceStrategyRepository:
 
     def ensure_schema(self) -> None:
         with sqlite3.connect(self._db_path) as connection:
-            connection.execute(
-                """
-                CREATE TABLE IF NOT EXISTS strategies (
-                    id INTEGER PRIMARY KEY,
-                    strategy_name TEXT NOT NULL UNIQUE
-                )
-                """
-            )
-            connection.execute(
-                """
-                CREATE TABLE IF NOT EXISTS strategy_domains (
-                    id INTEGER PRIMARY KEY,
-                    domain TEXT NOT NULL UNIQUE,
-                    strategy_id INTEGER NOT NULL,
-                    FOREIGN KEY (strategy_id) REFERENCES strategies(id)
-                )
-                """
-            )
-            connection.execute(
-                """
-                CREATE INDEX IF NOT EXISTS idx_strategy_domains_domain
-                ON strategy_domains (domain)
-                """
-            )
-            connection.execute(
-                """
-                CREATE TABLE IF NOT EXISTS strategy_settings (
-                    setting_key TEXT PRIMARY KEY,
-                    setting_value TEXT NOT NULL
-                )
-                """
-            )
             connection.executemany(
                 "INSERT OR IGNORE INTO strategies (strategy_name) VALUES (?)",
                 [("gemini_url",), ("playwright",), ("jina",)],

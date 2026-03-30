@@ -16,23 +16,9 @@ class ScrapeAnalysisProcessor:
     def db_path(self) -> str:
         return self._db_path
 
-    def _create_table_if_missing(self, connection: sqlite3.Connection) -> None:
-        connection.execute(
-            f"""
-            CREATE TABLE IF NOT EXISTS {self.TABLE_NAME} (
-                product_id INTEGER NOT NULL,
-                url_id INTEGER NOT NULL,
-                url TEXT NOT NULL,
-                value INTEGER,
-                diff INTEGER
-            )
-            """
-        )
-
     def refresh(self) -> dict:
         try:
             with sqlite3.connect(self._db_path) as connection:
-                self._create_table_if_missing(connection)
                 deleted_rows = connection.execute(
                     f"DELETE FROM {self.TABLE_NAME}"
                 ).rowcount

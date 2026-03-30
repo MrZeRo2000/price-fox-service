@@ -42,6 +42,12 @@ CREATE TABLE "scrape_analysis" (
                             diff INTEGER
                         );
 
+CREATE TABLE "scrape_stats" (
+                            session_date INTEGER NOT NULL,
+                            successful_count INTEGER NOT NULL,
+                            failed_count INTEGER NOT NULL
+                        );
+
 CREATE TABLE "scrape_detailed" (
                             session_date INTEGER NOT NULL,
                             product_id INTEGER NOT NULL,
