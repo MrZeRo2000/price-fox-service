@@ -3,6 +3,9 @@ from pathlib import Path
 import time
 import hashlib
 import json
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 def content_stable_wait(page, max_wait=120):
@@ -10,7 +13,7 @@ def content_stable_wait(page, max_wait=120):
     Maximum reliability for content only - ignores images
     (same as before - keeping it for completeness)
     """
-    print("🔒 Waiting for content stability...\n")
+    logger.info("🔒 Waiting for content stability...\n")
     start_time = time.time()
     checks = {}
 
@@ -19,13 +22,13 @@ def content_stable_wait(page, max_wait=120):
         try:
             page.wait_for_load_state("networkidle", timeout=30000)
             checks[f'networkidle_{attempt}'] = True
-            print(f"  ✓ Network idle (check {attempt + 1}/3)")
+            logger.info(f"  ✓ Network idle (check {attempt + 1}/3)")
             time.sleep(2)
         except:
             checks[f'networkidle_{attempt}'] = False
 
     # Content stabilization
-    print("  Checking content stability...")
+    logger.info("  Checking content stability...")
     stable_count = 0
     required_stable = 5
     last_hash = ""
@@ -46,7 +49,7 @@ def content_stable_wait(page, max_wait=120):
             stable_count += 1
             if stable_count >= required_stable:
                 checks['content_stable'] = True
-                print(f"  ✓ Content stable ({content_signature})")
+                logger.info(f"  ✓ Content stable ({content_signature})")
                 break
         else:
             stable_count = 0
@@ -93,8 +96,8 @@ def content_stable_wait(page, max_wait=120):
     passed = sum(1 for v in checks.values() if v)
     total = len(checks)
 
-    print(f"  ⏱️  Wait time: {elapsed:.1f}s")
-    print(f"  ✅ Reliability: {passed}/{total} ({passed / total * 100:.1f}%)\n")
+    logger.info(f"  ⏱️  Wait time: {elapsed:.1f}s")
+    logger.info(f"  ✅ Reliability: {passed}/{total} ({passed / total * 100:.1f}%)\n")
 
     return {
         "elapsed": elapsed,
@@ -112,34 +115,34 @@ def save_single_page(page, url, output_dir, browser_session_id):
     safe_name = url.replace("https://", "").replace("http://", "").replace("/", "_")[:50]
     base_name = f"{safe_name}_{timestamp}"
 
-    print(f"{'=' * 70}")
-    print(f"🌐 URL: {url}")
-    print(f"{'=' * 70}\n")
+    logger.info(f"{'=' * 70}")
+    logger.info(f"🌐 URL: {url}")
+    logger.info(f"{'=' * 70}\n")
 
     try:
         # Navigate
-        print("Loading page...")
+        logger.info("Loading page...")
         page.goto(url, wait_until="domcontentloaded", timeout=60000)
 
         # Wait for content stability
         wait_result = content_stable_wait(page, max_wait=120)
 
         # Extract content
-        print("📦 Extracting content...")
+        logger.info("📦 Extracting content...")
 
         # 1. Full HTML
         html_content = page.content()
         html_path = f"{output_dir}/{base_name}.html"
         with open(html_path, "w", encoding="utf-8") as f:
             f.write(html_content)
-        print(f"  💾 HTML: {len(html_content):,} bytes")
+        logger.info(f"  💾 HTML: {len(html_content):,} bytes")
 
         # 2. Plain text
         text_content = page.evaluate("() => document.body.innerText")
         text_path = f"{output_dir}/{base_name}.txt"
         with open(text_path, "w", encoding="utf-8") as f:
             f.write(text_content)
-        print(f"  💾 Text: {len(text_content):,} chars")
+        logger.info(f"  💾 Text: {len(text_content):,} chars")
 
         # 3. Metadata
         metadata = {
@@ -158,7 +161,7 @@ def save_single_page(page, url, output_dir, browser_session_id):
         with open(metadata_path, "w", encoding="utf-8") as f:
             json.dump(metadata, f, indent=2, ensure_ascii=False)
 
-        print(f"  ✅ Success! Reliability: {wait_result['success_rate'] * 100:.1f}%\n")
+        logger.info(f"  ✅ Success! Reliability: {wait_result['success_rate'] * 100:.1f}%\n")
 
         return {
             "url": url,
@@ -171,7 +174,7 @@ def save_single_page(page, url, output_dir, browser_session_id):
         }
 
     except Exception as e:
-        print(f"  ❌ Error: {e}\n")
+        logger.error(f"  ❌ Error: {e}\n")
         return {
             "url": url,
             "status": "failed",
@@ -188,18 +191,18 @@ def batch_scrape_optimized(urls, output_dir="batch_scrapes", delay_between_pages
     browser_session_id = time.strftime("%Y%m%d_%H%M%S")
     results = []
 
-    print(f"\n{'=' * 70}")
-    print(f"🚀 BATCH SCRAPING - OPTIMIZED MODE")
-    print(f"{'=' * 70}")
-    print(f"URLs to process: {len(urls)}")
-    print(f"Output directory: {output_dir}")
-    print(f"Delay between pages: {delay_between_pages}s")
-    print(f"Browser session ID: {browser_session_id}")
-    print(f"{'=' * 70}\n")
+    logger.info(f"\n{'=' * 70}")
+    logger.info(f"🚀 BATCH SCRAPING - OPTIMIZED MODE")
+    logger.info(f"{'=' * 70}")
+    logger.info(f"URLs to process: {len(urls)}")
+    logger.info(f"Output directory: {output_dir}")
+    logger.info(f"Delay between pages: {delay_between_pages}s")
+    logger.info(f"Browser session ID: {browser_session_id}")
+    logger.info(f"{'=' * 70}\n")
 
     with sync_playwright() as p:
         # Create browser ONCE
-        print("🔧 Launching browser...")
+        logger.info("🔧 Launching browser...")
         browser = p.chromium.launch(headless=True)
 
         # Create context with realistic settings
@@ -212,24 +215,24 @@ def batch_scrape_optimized(urls, output_dir="batch_scrapes", delay_between_pages
         page = context.new_page()
         page.set_default_timeout(120000)
 
-        print(f"✓ Browser ready\n")
+        logger.info(f"✓ Browser ready\n")
 
         # Process all URLs with the same browser
         start_time = time.time()
 
         for i, url in enumerate(urls, 1):
-            print(f"📄 Processing {i}/{len(urls)}")
+            logger.info(f"📄 Processing {i}/{len(urls)}")
 
             result = save_single_page(page, url, output_dir, browser_session_id)
             results.append(result)
 
             # Delay between pages (be nice to servers)
             if i < len(urls):
-                print(f"⏳ Waiting {delay_between_pages}s before next page...\n")
+                logger.info(f"⏳ Waiting {delay_between_pages}s before next page...\n")
                 time.sleep(delay_between_pages)
 
         # Close browser ONCE at the end
-        print("🔧 Closing browser...")
+        logger.info("🔧 Closing browser...")
         browser.close()
 
         total_time = time.time() - start_time
@@ -249,22 +252,26 @@ def batch_scrape_optimized(urls, output_dir="batch_scrapes", delay_between_pages
     with open(summary_path, "w") as f:
         json.dump(summary, f, indent=2)
 
-    print(f"\n{'=' * 70}")
-    print(f"✅ BATCH COMPLETE")
-    print(f"{'=' * 70}")
-    print(f"Total URLs: {summary['total_urls']}")
-    print(f"Successful: {summary['successful']}")
-    print(f"Failed: {summary['failed']}")
-    print(f"Total time: {total_time:.1f}s")
-    print(f"Avg per URL: {summary['avg_time_per_url']:.1f}s")
-    print(f"Summary: {summary_path}")
-    print(f"{'=' * 70}\n")
+    logger.info(f"\n{'=' * 70}")
+    logger.info(f"✅ BATCH COMPLETE")
+    logger.info(f"{'=' * 70}")
+    logger.info(f"Total URLs: {summary['total_urls']}")
+    logger.info(f"Successful: {summary['successful']}")
+    logger.info(f"Failed: {summary['failed']}")
+    logger.info(f"Total time: {total_time:.1f}s")
+    logger.info(f"Avg per URL: {summary['avg_time_per_url']:.1f}s")
+    logger.info(f"Summary: {summary_path}")
+    logger.info(f"{'=' * 70}\n")
 
     return results
 
 
 # Usage
 if __name__ == "__main__":
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s | %(levelname)s | %(message)s",
+    )
     urls = [
         "https://news.ycombinator.com",
         "https://example.com",

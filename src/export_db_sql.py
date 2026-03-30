@@ -1,6 +1,11 @@
 import argparse
+import logging
 import sqlite3
 from pathlib import Path
+
+from config.settings import default_product_catalog_db_path
+
+logger = logging.getLogger(__name__)
 
 
 TABLES_TO_EXPORT = [
@@ -89,7 +94,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--db-path",
-        default=str(Path(__file__).resolve().parent.parent / "data" / "db" / "product-catalog.sqlite"),
+        default=default_product_catalog_db_path(),
         help="Path to SQLite database file.",
     )
     parser.add_argument(
@@ -101,6 +106,10 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def main() -> int:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s | %(levelname)s | %(message)s",
+    )
     parser = _build_parser()
     args = parser.parse_args()
 
@@ -121,7 +130,7 @@ def main() -> int:
                 output_path=output_dir / f"{table_name}.sql",
             )
 
-    print(f"Updated SQL files in: {output_dir}")
+    logger.info(f"Updated SQL files in: {output_dir}")
     return 0
 
 

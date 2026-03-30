@@ -1,6 +1,11 @@
 import argparse
+import logging
 import sqlite3
 from pathlib import Path
+
+from config.settings import default_product_catalog_db_path
+
+logger = logging.getLogger(__name__)
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -9,12 +14,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--db-path",
-        default=str(
-            Path(__file__).resolve().parent.parent
-            / "data"
-            / "db"
-            / "product-catalog.sqlite"
-        ),
+        default=default_product_catalog_db_path(),
         help="Path to SQLite database file.",
     )
     parser.add_argument(
@@ -45,6 +45,10 @@ def apply_sql_script(db_path: Path, sql_path: Path) -> None:
 
 
 def main() -> int:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s | %(levelname)s | %(message)s",
+    )
     parser = _build_parser()
     args = parser.parse_args()
 
@@ -54,12 +58,12 @@ def main() -> int:
     try:
         apply_sql_script(db_path=db_path, sql_path=sql_path)
     except Exception as exc:
-        print(f"Failed to apply strategy config: {exc}")
+        logger.error(f"Failed to apply strategy config: {exc}")
         return 1
 
-    print(f"Strategy config applied successfully.")
-    print(f"Database: {db_path}")
-    print(f"Script: {sql_path}")
+    logger.info("Strategy config applied successfully.")
+    logger.info(f"Database: {db_path}")
+    logger.info(f"Script: {sql_path}")
     return 0
 
 

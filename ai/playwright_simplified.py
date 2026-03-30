@@ -1,3 +1,8 @@
+import logging
+
+logger = logging.getLogger(__name__)
+
+
 def simple_content_reliable(url, output_file="page.html"):
     """
     Simplified but still highly reliable
@@ -7,7 +12,7 @@ def simple_content_reliable(url, output_file="page.html"):
         page = browser.new_page()
         page.set_default_timeout(120000)
         
-        print(f"🌐 Loading: {url}")
+        logger.info(f"🌐 Loading: {url}")
         page.goto(url, wait_until="domcontentloaded")
         
         # Wait for network idle (multiple times)
@@ -16,7 +21,7 @@ def simple_content_reliable(url, output_file="page.html"):
             time.sleep(2)
         
         # Content stabilization
-        print("⏳ Waiting for content stability...")
+        logger.info("⏳ Waiting for content stability...")
         stable = 0
         last_length = 0
         
@@ -26,7 +31,7 @@ def simple_content_reliable(url, output_file="page.html"):
             if current_length == last_length:
                 stable += 1
                 if stable >= 5:
-                    print(f"✓ Content stable at {current_length:,} chars")
+                    logger.info(f"✓ Content stable at {current_length:,} chars")
                     break
             else:
                 stable = 0
@@ -35,14 +40,14 @@ def simple_content_reliable(url, output_file="page.html"):
             time.sleep(1)
         
         # Trigger lazy content
-        print("⏳ Triggering lazy content...")
+        logger.info("⏳ Triggering lazy content...")
         for pos in [0.5, 1.0, 0]:
             page.evaluate(f"window.scrollTo(0, document.body.scrollHeight * {pos})")
             time.sleep(2)
             page.wait_for_load_state("networkidle", timeout=10000)
         
         # Final wait
-        print("⏳ Final stabilization...")
+        logger.info("⏳ Final stabilization...")
         time.sleep(5)
         
         # Save
@@ -52,8 +57,12 @@ def simple_content_reliable(url, output_file="page.html"):
         
         browser.close()
         
-        print(f"✅ Saved: {output_file} ({len(html):,} bytes)")
+        logger.info(f"✅ Saved: {output_file} ({len(html):,} bytes)")
         return output_file
 
 # Usage
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s | %(levelname)s | %(message)s",
+)
 simple_content_reliable("https://example.com", "example.html")

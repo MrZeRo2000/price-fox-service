@@ -7,6 +7,7 @@ from pathlib import Path
 from application import persist_latest_scrape_results, run_pipeline
 from app_logger import create_application_logger
 from cfg import Configuration
+from config.settings import resolve_configuration_settings
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -16,7 +17,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--data-path",
         default=None,
-        help="Path to data directory. Defaults to project data folder.",
+        help="Path to data directory. Defaults to config.settings value.",
     )
     parser.add_argument(
         "--config-path",
@@ -26,7 +27,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--db-path",
         default=None,
-        help="Path to product catalog SQLite DB. Defaults to data/db/product-catalog.sqlite.",
+        help="Path to product catalog SQLite DB. Defaults to config.settings value.",
     )
     parser.add_argument(
         "--print-json",
@@ -53,11 +54,12 @@ def main() -> int:
     if args.parse_only and args.collect_only:
         parser.error("--parse-only and --collect-only cannot be used together.")
 
-    resolved_data_path = (
-        args.data_path
-        if args.data_path is not None
-        else str(Path(__file__).resolve().parent.parent / "data")
+    resolved_settings = resolve_configuration_settings(
+        data_path=args.data_path,
+        config_path=args.config_path,
+        db_path=args.db_path,
     )
+    resolved_data_path = resolved_settings.data_path
     logger = create_application_logger(data_path=resolved_data_path)
 
     try:

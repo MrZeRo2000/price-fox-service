@@ -3,49 +3,53 @@ from pathlib import Path
 import time
 import hashlib
 import json
+import logging
+
+logger = logging.getLogger(__name__)
+
 
 def content_stable_wait(page, max_wait=120):
     """
     Maximum reliability for content only - ignores images
     """
-    print("🔒 CONTENT-ONLY RELIABILITY MODE\n")
+    logger.info("🔒 CONTENT-ONLY RELIABILITY MODE\n")
     start_time = time.time()
     checks = {}
     
     # LAYER 1: Basic loading
-    print("Layer 1: Basic Page Load")
+    logger.info("Layer 1: Basic Page Load")
     try:
         page.wait_for_load_state("domcontentloaded", timeout=60000)
         checks['dom_loaded'] = True
-        print("  ✓ DOM loaded")
+        logger.info("  ✓ DOM loaded")
     except Exception as e:
         checks['dom_loaded'] = False
-        print(f"  ✗ DOM load failed: {e}")
+        logger.error(f"  ✗ DOM load failed: {e}")
     
     # Wait for network idle multiple times
     for attempt in range(3):
         try:
             page.wait_for_load_state("networkidle", timeout=30000)
             checks[f'networkidle_{attempt}'] = True
-            print(f"  ✓ Network idle (check {attempt + 1}/3)")
+            logger.info(f"  ✓ Network idle (check {attempt + 1}/3)")
             time.sleep(2)
         except:
             checks[f'networkidle_{attempt}'] = False
     
     # LAYER 2: Document ready
-    print("\nLayer 2: Document Ready State")
+    logger.info("\nLayer 2: Document Ready State")
     for i in range(15):
         ready_state = page.evaluate("() => document.readyState")
         if ready_state == "complete":
             checks['ready_state'] = True
-            print(f"  ✓ Document ready: complete")
+            logger.info(f"  ✓ Document ready: complete")
             break
         time.sleep(1)
     else:
         checks['ready_state'] = False
     
     # LAYER 3: Content hash stabilization (CRITICAL)
-    print("\nLayer 3: Content Stabilization")
+    logger.info("\nLayer 3: Content Stabilization")
     stable_count = 0
     required_stable = 5  # Must be identical 5 times in a row
     last_hash = ""
@@ -65,25 +69,25 @@ def content_stable_wait(page, max_wait=120):
         
         if current_hash == last_hash:
             stable_count += 1
-            print(f"  Stable: {stable_count}/{required_stable} ({content_signature})")
+            logger.info(f"  Stable: {stable_count}/{required_stable} ({content_signature})")
             
             if stable_count >= required_stable:
                 checks['content_stable'] = True
-                print("  ✓ Content fully stabilized!")
+                logger.info("  ✓ Content fully stabilized!")
                 break
         else:
             if last_hash:
-                print(f"  Content changed: {content_signature}")
+                logger.info(f"  Content changed: {content_signature}")
             stable_count = 0
         
         last_hash = current_hash
         time.sleep(1)
     else:
         checks['content_stable'] = False
-        print("  ⚠️ Content still changing")
+        logger.error("  ⚠️ Content still changing")
     
     # LAYER 4: DOM Mutation Monitoring
-    print("\nLayer 4: DOM Mutation Stability")
+    logger.info("\nLayer 4: DOM Mutation Stability")
     mutation_result = page.evaluate("""
         async () => {
             return new Promise((resolve) => {
@@ -118,14 +122,14 @@ def content_stable_wait(page, max_wait=120):
     """)
     
     checks['dom_stable'] = mutation_result['stable']
-    print(f"  Mutations detected: {mutation_result['mutations']}")
+    logger.info(f"  Mutations detected: {mutation_result['mutations']}")
     if mutation_result['stable']:
-        print("  ✓ DOM stable (no changes for 4s)")
+        logger.info("  ✓ DOM stable (no changes for 4s)")
     else:
-        print("  ⚠️ DOM still mutating")
+        logger.error("  ⚠️ DOM still mutating")
     
     # LAYER 5: JavaScript execution complete
-    print("\nLayer 5: JavaScript Execution")
+    logger.info("\nLayer 5: JavaScript Execution")
     try:
         page.wait_for_function("""
             () => {
@@ -143,13 +147,13 @@ def content_stable_wait(page, max_wait=120):
             }
         """, timeout=20000)
         checks['js_complete'] = True
-        print("  ✓ JavaScript execution complete")
+        logger.info("  ✓ JavaScript execution complete")
     except:
         checks['js_complete'] = False
-        print("  ⚠️ JavaScript check timeout")
+        logger.error("  ⚠️ JavaScript check timeout")
     
     # LAYER 6: Scroll to trigger lazy-loaded content
-    print("\nLayer 6: Lazy Content Triggering")
+    logger.info("\nLayer 6: Lazy Content Triggering")
     scroll_positions = [0.33, 0.66, 1.0, 0]  # 33%, 66%, 100%, top
     
     for pos in scroll_positions:
@@ -171,10 +175,10 @@ def content_stable_wait(page, max_wait=120):
             pass
     
     checks['lazy_triggered'] = True
-    print("  ✓ Lazy content triggered")
+    logger.info("  ✓ Lazy content triggered")
     
     # LAYER 7: Final content verification
-    print("\nLayer 7: Final Verification")
+    logger.info("\nLayer 7: Final Verification")
     time.sleep(5)  # Final 5-second pause
     
     # Take two content snapshots 3 seconds apart
@@ -213,23 +217,23 @@ def content_stable_wait(page, max_wait=120):
     checks['final_verification'] = final_stable
     
     if final_stable:
-        print(f"  ✓ Final verification PASSED")
-        print(f"    Text: {snapshot2['textLength']:,} chars")
-        print(f"    Elements: {snapshot2['elementCount']:,}")
-        print(f"    HTML: {snapshot2['htmlLength']:,} bytes")
+        logger.info(f"  ✓ Final verification PASSED")
+        logger.info(f"    Text: {snapshot2['textLength']:,} chars")
+        logger.info(f"    Elements: {snapshot2['elementCount']:,}")
+        logger.info(f"    HTML: {snapshot2['htmlLength']:,} bytes")
     else:
-        print(f"  ⚠️ Content differs between snapshots")
-        print(f"    Snapshot 1: {snapshot1['textLength']} chars, {snapshot1['elementCount']} elements")
-        print(f"    Snapshot 2: {snapshot2['textLength']} chars, {snapshot2['elementCount']} elements")
+        logger.error(f"  ⚠️ Content differs between snapshots")
+        logger.info(f"    Snapshot 1: {snapshot1['textLength']} chars, {snapshot1['elementCount']} elements")
+        logger.info(f"    Snapshot 2: {snapshot2['textLength']} chars, {snapshot2['elementCount']} elements")
     
     elapsed = time.time() - start_time
     passed = sum(1 for v in checks.values() if v)
     total = len(checks)
     
-    print(f"\n{'='*60}")
-    print(f"⏱️  Wait time: {elapsed:.1f}s")
-    print(f"✅ Reliability: {passed}/{total} checks passed ({passed/total*100:.1f}%)")
-    print(f"{'='*60}\n")
+    logger.info(f"\n{'='*60}")
+    logger.info(f"⏱️  Wait time: {elapsed:.1f}s")
+    logger.info(f"✅ Reliability: {passed}/{total} checks passed ({passed/total*100:.1f}%)")
+    logger.info(f"{'='*60}\n")
     
     return {
         "elapsed": elapsed,
@@ -248,12 +252,12 @@ def save_content_reliable(url, output_dir="scraped_content"):
     safe_name = url.replace("https://", "").replace("http://", "").replace("/", "_")[:50]
     base_name = f"{safe_name}_{timestamp}"
     
-    print(f"\n{'='*70}")
-    print(f"🎯 MAXIMUM RELIABILITY - CONTENT ONLY")
-    print(f"{'='*70}")
-    print(f"URL: {url}")
-    print(f"Time: {timestamp}")
-    print(f"{'='*70}\n")
+    logger.info(f"\n{'='*70}")
+    logger.info(f"🎯 MAXIMUM RELIABILITY - CONTENT ONLY")
+    logger.info(f"{'='*70}")
+    logger.info(f"URL: {url}")
+    logger.info(f"Time: {timestamp}")
+    logger.info(f"{'='*70}\n")
     
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
@@ -264,29 +268,29 @@ def save_content_reliable(url, output_dir="scraped_content"):
         page.set_default_timeout(120000)
         
         # Navigate
-        print("🌐 Navigating to URL...")
+        logger.info("🌐 Navigating to URL...")
         page.goto(url, wait_until="domcontentloaded", timeout=60000)
-        print("✓ Initial load complete\n")
+        logger.info("✓ Initial load complete\n")
         
         # Ultra-reliable wait
         wait_result = content_stable_wait(page, max_wait=120)
         
         # Extract content
-        print("📦 Extracting content...\n")
+        logger.info("📦 Extracting content...\n")
         
         # 1. Full HTML
         html_content = page.content()
         html_path = f"{output_dir}/{base_name}.html"
         with open(html_path, "w", encoding="utf-8") as f:
             f.write(html_content)
-        print(f"💾 HTML: {html_path} ({len(html_content):,} bytes)")
+        logger.info(f"💾 HTML: {html_path} ({len(html_content):,} bytes)")
         
         # 2. Plain text content
         text_content = page.evaluate("() => document.body.innerText")
         text_path = f"{output_dir}/{base_name}.txt"
         with open(text_path, "w", encoding="utf-8") as f:
             f.write(text_content)
-        print(f"💾 Text: {text_path} ({len(text_content):,} chars)")
+        logger.info(f"💾 Text: {text_path} ({len(text_content):,} chars)")
         
         # 3. Structured content extraction
         structured_content = page.evaluate("""
@@ -320,7 +324,7 @@ def save_content_reliable(url, output_dir="scraped_content"):
         structured_path = f"{output_dir}/{base_name}_structured.json"
         with open(structured_path, "w", encoding="utf-8") as f:
             json.dump(structured_content, f, indent=2, ensure_ascii=False)
-        print(f"💾 Structured: {structured_path}")
+        logger.info(f"💾 Structured: {structured_path}")
         
         # 4. Metadata
         metadata = {
@@ -337,10 +341,10 @@ def save_content_reliable(url, output_dir="scraped_content"):
         metadata_path = f"{output_dir}/{base_name}_metadata.json"
         with open(metadata_path, "w", encoding="utf-8") as f:
             json.dump(metadata, f, indent=2, ensure_ascii=False)
-        print(f"💾 Metadata: {metadata_path}")
+        logger.info(f"💾 Metadata: {metadata_path}")
         
         # 5. Final verification
-        print("\n🔍 Final Verification...")
+        logger.info("\n🔍 Final Verification...")
         time.sleep(5)
         
         final_html = page.content()
@@ -350,20 +354,20 @@ def save_content_reliable(url, output_dir="scraped_content"):
         is_stable = (final_hash == verification_hash)
         metadata['verified_stable'] = is_stable
         
-        print(f"   Initial hash:  {final_hash}")
-        print(f"   Final hash:    {verification_hash}")
+        logger.info(f"   Initial hash:  {final_hash}")
+        logger.info(f"   Final hash:    {verification_hash}")
         
         if is_stable:
-            print(f"   ✅ STABLE - Content unchanged")
+            logger.info(f"   ✅ STABLE - Content unchanged")
         else:
-            print(f"   ⚠️  UNSTABLE - Content still changing")
-            print(f"   Difference: {abs(len(final_html) - len(html_content))} bytes")
+            logger.error(f"   ⚠️  UNSTABLE - Content still changing")
+            logger.error(f"   Difference: {abs(len(final_html) - len(html_content))} bytes")
             
             # Save the final version too
             final_html_path = f"{output_dir}/{base_name}_final.html"
             with open(final_html_path, "w", encoding="utf-8") as f:
                 f.write(final_html)
-            print(f"   💾 Saved final version: {final_html_path}")
+            logger.info(f"   💾 Saved final version: {final_html_path}")
         
         # Update metadata
         with open(metadata_path, "w", encoding="utf-8") as f:
@@ -371,15 +375,15 @@ def save_content_reliable(url, output_dir="scraped_content"):
         
         browser.close()
         
-        print(f"\n{'='*70}")
-        print(f"✅ COMPLETE")
-        print(f"{'='*70}")
-        print(f"📊 Summary:")
-        print(f"   Duration: {wait_result['elapsed']:.1f}s")
-        print(f"   Reliability: {wait_result['success_rate']*100:.1f}%")
-        print(f"   Verified Stable: {'YES' if is_stable else 'NO'}")
-        print(f"   Content Size: {len(text_content):,} chars")
-        print(f"{'='*70}\n")
+        logger.info(f"\n{'='*70}")
+        logger.info(f"✅ COMPLETE")
+        logger.info(f"{'='*70}")
+        logger.info(f"📊 Summary:")
+        logger.info(f"   Duration: {wait_result['elapsed']:.1f}s")
+        logger.info(f"   Reliability: {wait_result['success_rate']*100:.1f}%")
+        logger.info(f"   Verified Stable: {'YES' if is_stable else 'NO'}")
+        logger.info(f"   Content Size: {len(text_content):,} chars")
+        logger.info(f"{'='*70}\n")
         
         return {
             "html": html_path,
@@ -392,7 +396,11 @@ def save_content_reliable(url, output_dir="scraped_content"):
 
 # Usage
 if __name__ == "__main__":
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s | %(levelname)s | %(message)s",
+    )
     result = save_content_reliable("https://news.ycombinator.com")
-    print(f"✅ Saved to: {result['html']}")
-    print(f"   Reliability: {result['reliability']*100:.1f}%")
-    print(f"   Stable: {result['verified_stable']}")
+    logger.info(f"✅ Saved to: {result['html']}")
+    logger.info(f"   Reliability: {result['reliability']*100:.1f}%")
+    logger.info(f"   Stable: {result['verified_stable']}")
