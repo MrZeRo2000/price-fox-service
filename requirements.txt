@@ -3,6 +3,7 @@ playwright
 pydantic
 beautifulsoup4
 lxml
+huggingface-hub
 transformers
 torch
-sentencepiece
+libsql
