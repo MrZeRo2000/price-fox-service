@@ -10,6 +10,34 @@ from cfg import Configuration
 from config.settings import resolve_configuration_settings
 
 
+def _log_resolved_configuration(
+    logger,
+    configuration: Configuration,
+    args: argparse.Namespace,
+) -> None:
+    catalog_source = (
+        "json_file"
+        if configuration.product_catalog_path is not None
+        else "sqlite_database"
+    )
+
+    resolved_configuration = {
+        "paths": {
+            "data_path": configuration.data_path,
+            "product_catalog_path": configuration.product_catalog_path,
+            "product_catalog_db_path": configuration.product_catalog_db_path,
+        },
+        "runtime": {
+            "parse_only": args.parse_only,
+            "collect_only": args.collect_only,
+            "print_json": args.print_json,
+            "catalog_source": catalog_source,
+        },
+    }
+    logger.info("Resolved configuration:")
+    logger.info(json.dumps(resolved_configuration, indent=2, ensure_ascii=False))
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Run the price fox scraping pipeline (fetch + parse)."
@@ -69,6 +97,7 @@ def main() -> int:
             db_path=args.db_path,
         )
         logger = configuration.logger
+        _log_resolved_configuration(logger, configuration, args)
         if args.collect_only:
             result = run_pipeline(
                 configuration,
