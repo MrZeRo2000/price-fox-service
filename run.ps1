@@ -1,0 +1,1 @@
+Invoke-Expression "$PSScriptRoot/venv/Scripts/python $PSScriptRoot/src/main.py --sync"
