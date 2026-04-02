@@ -1269,6 +1269,7 @@ class Fetcher:
                 args=[
                     "--disable-blink-features=AutomationControlled",
                     "--disable-dev-shm-usage",
+                    "--start-minimized",
                 ],
             )
             context = browser.new_context(
@@ -1380,7 +1381,7 @@ class Fetcher:
                 args=[
                     "--disable-blink-features=AutomationControlled",
                     "--disable-dev-shm-usage",
-                    "--start-maximized",
+                    "--start-minimized",
                 ],
             )
             page = context.pages[0] if context.pages else context.new_page()
