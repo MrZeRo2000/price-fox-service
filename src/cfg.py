@@ -34,7 +34,7 @@ class Configuration:
         product_catalog_db_path = settings.product_catalog_db_path
 
         if not os.path.exists(data_path):
-            raise ValueError(f"Data path {data_path} does not exist")
+            os.makedirs(data_path, exist_ok=True)
 
         self._data_path = data_path
         self._logger = create_application_logger(data_path=data_path)
