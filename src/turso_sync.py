@@ -74,7 +74,7 @@ class TursoSyncClient:
         return self._sync(direction="pull")
 
     def push_to_remote(self) -> dict:
-        return self._sync(direction="push")
+        return self.replace_remote_with_local()
 
     def replace_remote_with_local(self) -> dict:
         """

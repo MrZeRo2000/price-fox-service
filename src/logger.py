@@ -1,6 +1,7 @@
 import json
 import logging
 import logging.config
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -50,7 +51,8 @@ def create_application_logger(
     logs_root = Path(logs_dir).resolve() if logs_dir else Path(logs_root_template.format(**context)).resolve()
     logs_root.mkdir(parents=True, exist_ok=True)
 
-    log_file_name = f"{resolved_data_path.name or 'data'}.log"
+    dated_suffix = datetime.now().strftime("%Y%m%d")
+    log_file_name = f"{resolved_data_path.name or 'data'}_{dated_suffix}.log"
     log_file_path = logs_root / log_file_name
     context.update(
         {
