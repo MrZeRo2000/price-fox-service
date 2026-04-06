@@ -7,4 +7,6 @@ __pycache__
 /out
 /log
 
+/db/database/backups
+
 /.*chrome-profile*

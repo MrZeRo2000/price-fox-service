@@ -9,8 +9,22 @@ from application import persist_latest_scrape_results, run_pipeline
 from logger import create_application_logger
 from cfg import Configuration
 from config.settings import resolve_configuration_settings
-from turso_sync import TursoSyncClient, load_turso_sync_configuration
+from turso_sync import (
+    TursoSyncClient,
+    backup_sqlite_before_cloud_pull,
+    load_turso_sync_configuration,
+)
 from version import APP_VERSION
+
+
+def _local_backup_note_before_turso_pull(db_path: str) -> str:
+    """If the catalog DB exists, back it up and return a log suffix; else ``''``."""
+    if not os.path.exists(db_path):
+        return ""
+    backup = backup_sqlite_before_cloud_pull(db_path)
+    if backup.get("status") == "success":
+        return f" Local backup: '{backup['backup_path']}'."
+    return ""
 
 
 def _log_resolved_configuration(
@@ -115,12 +129,13 @@ def main() -> int:
                     f"Local catalog DB is missing at '{db_path}'. "
                     "Attempting bootstrap pull from Turso."
                 )
+                backup_note = ""
                 pull_result = turso_sync_client.pull_from_remote()
                 if pull_result["status"] == "success":
                     did_bootstrap_pull = True
                     logger.info(
                         f"Turso bootstrap pull completed ({pull_result['direction']}) "
-                        f"for DB '{pull_result['db_path']}' via mode '{pull_result.get('mode', 'unknown')}'."
+                        f"for DB '{pull_result['db_path']}' via mode '{pull_result.get('mode', 'unknown')}'.{backup_note}"
                     )
                 elif pull_result["status"] == "skipped":
                     raise ValueError(
@@ -143,11 +158,14 @@ def main() -> int:
                     db_path=configuration.product_catalog_db_path,
                 )
             if not did_bootstrap_pull:
+                backup_note = _local_backup_note_before_turso_pull(
+                    configuration.product_catalog_db_path
+                )
                 pull_result = turso_sync_client.pull_from_remote()
                 if pull_result["status"] == "success":
                     logger.info(
                         f"Turso pre-sync completed ({pull_result['direction']}) "
-                        f"for DB '{pull_result['db_path']}' via mode '{pull_result.get('mode', 'unknown')}'."
+                        f"for DB '{pull_result['db_path']}' via mode '{pull_result.get('mode', 'unknown')}'.{backup_note}"
                     )
                 elif pull_result["status"] == "skipped":
                     logger.info(
