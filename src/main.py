@@ -27,10 +27,47 @@ def _local_backup_note_before_turso_pull(db_path: str) -> str:
     return ""
 
 
+def _require_turso_pull_success(
+    pull_result: dict,
+    *,
+    phase: str,
+    db_path: str,
+    turso_config,
+    logger,
+) -> None:
+    if pull_result.get("status") == "success":
+        return
+    reason = pull_result.get("reason", "unknown")
+    msg = (
+        f"Turso {phase} pull was required but did not succeed "
+        f"(status={pull_result.get('status')}, reason={reason}). "
+        f"Local catalog DB path: '{db_path}'. "
+        f"Update '{turso_config.config_path}' (set enabled=true and valid url/auth_token), "
+        f"or pass --config-path to use a JSON catalog and skip the SQLite DB."
+    )
+    logger.error(msg)
+    raise RuntimeError(msg)
+
+
+def _require_turso_push_success(push_result: dict, *, turso_config, logger) -> None:
+    if push_result.get("status") == "success":
+        return
+    reason = push_result.get("reason", "unknown")
+    msg = (
+        f"Turso push was required but did not complete "
+        f"(status={push_result.get('status')}, reason={reason}). "
+        f"Config: '{turso_config.config_path}'. "
+        f"Fix Turso settings or resolve the error above so the local DB is pushed to the remote."
+    )
+    logger.error(msg)
+    raise RuntimeError(msg)
+
+
 def _log_resolved_configuration(
     logger,
     configuration: Configuration,
     args: argparse.Namespace,
+    turso_attempt_db_sync: bool,
 ) -> None:
     catalog_source = (
         "json_file"
@@ -49,6 +86,7 @@ def _log_resolved_configuration(
             "collect_only": args.collect_only,
             "print_json": args.print_json,
             "sync": args.sync,
+            "turso_attempt_db_sync": turso_attempt_db_sync,
             "catalog_source": catalog_source,
         },
     }
@@ -93,7 +131,10 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--sync",
         action="store_true",
-        help="Enable Turso sync with remote DB (disabled by default).",
+        help=(
+            "Request Turso sync with the remote DB. When config/turso.json has enabled, url, "
+            "and auth_token, pull before the run and push after are mandatory even without this flag."
+        ),
     )
     return parser
 
@@ -114,12 +155,18 @@ def main() -> int:
     logger = create_application_logger(data_path=resolved_data_path)
     logger.info(f"Price Fox version: {APP_VERSION}")
 
+    turso_config = load_turso_sync_configuration()
+    use_sqlite_catalog = args.config_path is None
+    attempt_db_sync = use_sqlite_catalog and (
+        turso_config.is_ready or args.sync
+    )
+
     try:
         turso_sync_client = None
         did_bootstrap_pull = False
-        if args.sync and args.config_path is None:
+
+        if attempt_db_sync:
             db_path = resolved_settings.product_catalog_db_path
-            turso_config = load_turso_sync_configuration()
             turso_sync_client = TursoSyncClient(
                 config=turso_config,
                 db_path=db_path,
@@ -135,13 +182,20 @@ def main() -> int:
                     did_bootstrap_pull = True
                     logger.info(
                         f"Turso bootstrap pull completed ({pull_result['direction']}) "
-                        f"for DB '{pull_result['db_path']}' via mode '{pull_result.get('mode', 'unknown')}'.{backup_note}"
+                        f"for DB '{pull_result['db_path']}' via mode "
+                        f"'{pull_result.get('mode', 'unknown')}'.{backup_note}"
                     )
-                elif pull_result["status"] == "skipped":
-                    raise ValueError(
-                        f"Local catalog DB is missing at '{db_path}', and Turso bootstrap pull "
-                        f"was skipped ({pull_result['reason']}). Check "
-                        f"'{turso_config.config_path}' and set enabled/url/auth_token."
+                _require_turso_pull_success(
+                    pull_result,
+                    phase="bootstrap",
+                    db_path=db_path,
+                    turso_config=turso_config,
+                    logger=logger,
+                )
+                if not os.path.exists(db_path):
+                    raise RuntimeError(
+                        f"Turso bootstrap pull reported success but local DB is still missing "
+                        f"at '{db_path}'."
                     )
 
         configuration = Configuration(
@@ -150,11 +204,14 @@ def main() -> int:
             db_path=args.db_path,
         )
         logger = configuration.logger
-        _log_resolved_configuration(logger, configuration, args)
-        if args.sync and configuration.product_catalog_db_path is not None:
+        _log_resolved_configuration(
+            logger, configuration, args, turso_attempt_db_sync=attempt_db_sync
+        )
+
+        if attempt_db_sync and configuration.product_catalog_db_path is not None:
             if turso_sync_client is None:
                 turso_sync_client = TursoSyncClient(
-                    config=configuration.turso,
+                    config=turso_config,
                     db_path=configuration.product_catalog_db_path,
                 )
             if not did_bootstrap_pull:
@@ -165,19 +222,30 @@ def main() -> int:
                 if pull_result["status"] == "success":
                     logger.info(
                         f"Turso pre-sync completed ({pull_result['direction']}) "
-                        f"for DB '{pull_result['db_path']}' via mode '{pull_result.get('mode', 'unknown')}'.{backup_note}"
+                        f"for DB '{pull_result['db_path']}' via mode "
+                        f"'{pull_result.get('mode', 'unknown')}'.{backup_note}"
                     )
-                elif pull_result["status"] == "skipped":
-                    logger.info(
-                        f"Turso pre-sync skipped ({pull_result['reason']}) "
-                        f"from config '{configuration.turso.config_path}'."
-                    )
-        elif args.sync:
+                _require_turso_pull_success(
+                    pull_result,
+                    phase="pre-run",
+                    db_path=configuration.product_catalog_db_path,
+                    turso_config=turso_config,
+                    logger=logger,
+                )
+        elif args.sync and not use_sqlite_catalog:
             logger.info(
-                "Turso sync disabled for this run because product catalog is loaded from JSON."
+                "Turso sync was not applied: product catalog is loaded from JSON (--config-path)."
             )
-        else:
-            logger.info("Turso sync is disabled. Use --sync to enable remote synchronization.")
+        elif turso_config.is_ready and not use_sqlite_catalog:
+            logger.info(
+                "Turso is fully configured, but pull/push apply only when the catalog is loaded "
+                "from SQLite (omit --config-path)."
+            )
+        elif not attempt_db_sync:
+            logger.info(
+                "Turso DB sync is off (set enabled/url/auth_token in turso.json for mandatory "
+                "pull/push with SQLite, or pass --sync to require sync when the config is incomplete)."
+            )
 
         if args.collect_only:
             result = run_pipeline(
@@ -207,18 +275,21 @@ def main() -> int:
     logger.info(f"Successful parses: {successful_parses}")
     if not args.collect_only:
         persist_latest_scrape_results(configuration)
-    if turso_sync_client is not None:
-        push_result = turso_sync_client.push_to_remote()
-        if push_result["status"] == "success":
-            logger.info(
-                f"Turso post-sync completed ({push_result['direction']}) "
-                f"for DB '{push_result['db_path']}' via mode '{push_result.get('mode', 'unknown')}'."
+    if attempt_db_sync and turso_sync_client is not None:
+        try:
+            push_result = turso_sync_client.push_to_remote()
+            if push_result["status"] == "success":
+                logger.info(
+                    f"Turso post-sync completed ({push_result['direction']}) "
+                    f"for DB '{push_result['db_path']}' via mode "
+                    f"'{push_result.get('mode', 'unknown')}'."
+                )
+            _require_turso_push_success(
+                push_result, turso_config=turso_config, logger=logger
             )
-        elif push_result["status"] == "skipped":
-            logger.info(
-                f"Turso post-sync skipped ({push_result['reason']}) "
-                f"from config '{configuration.turso.config_path}'."
-            )
+        except Exception as exc:
+            logger.error(f"Turso push failed: {exc}")
+            return 1
 
     session_root = None
     if fetch_results:

@@ -6,6 +6,7 @@ should run ``backup_sqlite_before_cloud_pull`` so a known-good copy exists if
 remote data is bad (see ``main``).
 """
 import json
+import logging
 import os
 import re
 import shutil
@@ -14,8 +15,11 @@ import sys
 import time
 from dataclasses import dataclass
 from datetime import datetime
+from urllib.parse import urlparse
 
 from config.settings import default_product_catalog_db_path
+
+logger = logging.getLogger(__name__)
 
 BACKUP_DATE_FOLDER_FORMAT = "%Y_%m_%d"
 BACKUP_RETENTION_COUNT = 10
@@ -40,6 +44,19 @@ def _project_root() -> str:
 
 def default_turso_config_path() -> str:
     return os.path.join(_project_root(), "config", "turso.json")
+
+
+def describe_sync_url_for_logs(url: str | None) -> str:
+    """Host/scheme for logs (no credentials)."""
+    if not url:
+        return "(none)"
+    try:
+        parsed = urlparse(str(url).strip())
+        if parsed.netloc:
+            return f"{parsed.scheme}://{parsed.netloc}"
+        return str(url).strip()[:120]
+    except Exception:
+        return "(unparseable url)"
 
 
 def load_turso_sync_configuration(config_path: str | None = None) -> TursoSyncConfiguration:
@@ -160,10 +177,49 @@ class TursoSyncClient:
         Does not create a local backup; call ``backup_sqlite_before_cloud_pull``
         first when ``db_path`` already exists (``main`` does this before pull).
         """
-        return self._sync(direction="pull")
+        logger.info(
+            "Turso pull starting: db_path=%s remote=%s config=%s",
+            self._db_path,
+            describe_sync_url_for_logs(self._config.url),
+            self._config.config_path,
+        )
+        result = self._sync(direction="pull")
+        if result.get("status") == "success":
+            logger.info(
+                "Turso pull finished: mode=%s db_path=%s",
+                result.get("mode"),
+                result.get("db_path"),
+            )
+        else:
+            logger.warning(
+                "Turso pull did not complete: status=%s direction=%s reason=%s",
+                result.get("status"),
+                result.get("direction"),
+                result.get("reason"),
+            )
+        return result
 
     def push_to_remote(self) -> dict:
-        return self.replace_remote_with_local()
+        logger.info(
+            "Turso push starting (replace remote with local): db_path=%s remote=%s config=%s",
+            self._db_path,
+            describe_sync_url_for_logs(self._config.url),
+            self._config.config_path,
+        )
+        result = self.replace_remote_with_local()
+        if result.get("status") == "success":
+            logger.info(
+                "Turso push finished: mode=%s db_path=%s",
+                result.get("mode"),
+                result.get("db_path"),
+            )
+        else:
+            logger.warning(
+                "Turso push did not complete: status=%s reason=%s",
+                result.get("status"),
+                result.get("reason"),
+            )
+        return result
 
     def replace_remote_with_local(self) -> dict:
         """
@@ -171,12 +227,20 @@ class TursoSyncClient:
         Drops remote user objects and uploads full local dump.
         """
         if not self._config.enabled:
+            logger.warning(
+                "Turso replace_remote_with_local skipped: enabled=false config=%s",
+                self._config.config_path,
+            )
             return {
                 "status": "skipped",
                 "direction": "push",
                 "reason": "disabled",
             }
         if not self._config.is_ready:
+            logger.error(
+                "Turso replace_remote_with_local refused: incomplete config %s",
+                self._config.config_path,
+            )
             raise ValueError(
                 f"Turso is enabled, but url/auth_token are missing in '{self._config.config_path}'."
             )
@@ -197,12 +261,22 @@ class TursoSyncClient:
 
     def _sync(self, direction: str) -> dict:
         if not self._config.enabled:
+            logger.warning(
+                "Turso sync skipped: enabled=false direction=%s config=%s",
+                direction,
+                self._config.config_path,
+            )
             return {
                 "status": "skipped",
                 "direction": direction,
                 "reason": "disabled",
             }
         if not self._config.is_ready:
+            logger.error(
+                "Turso sync refused: missing url or auth_token direction=%s config=%s",
+                direction,
+                self._config.config_path,
+            )
             raise ValueError(
                 f"Turso is enabled, but url/auth_token are missing in '{self._config.config_path}'."
             )
@@ -211,17 +285,30 @@ class TursoSyncClient:
 
         sync_mode = "replica_sync"
         connection = None
+        started = time.monotonic()
         try:
             try:
+                logger.debug(
+                    "Turso opening libsql replica: db_path=%s remote=%s",
+                    self._db_path,
+                    describe_sync_url_for_logs(self._config.url),
+                )
                 connection = _connect_libsql(
                     db_path=self._db_path,
                     sync_url=self._config.url,
                     auth_token=self._config.auth_token,
                 )
                 # libSQL sync is bi-directional; we expose pull/push wrappers for pipeline intent.
+                logger.debug("Turso calling connection.sync() direction=%s", direction)
                 connection.sync()
             except Exception as exc:
+                elapsed_ms = int((time.monotonic() - started) * 1000)
                 if direction == "push" and _is_missing_replica_metadata_error(exc):
+                    logger.warning(
+                        "Turso replica metadata missing after %sms; falling back to direct upload: %s",
+                        elapsed_ms,
+                        exc,
+                    )
                     _push_local_sqlite_to_remote(
                         db_path=self._db_path,
                         sync_url=self._config.url,
@@ -229,6 +316,13 @@ class TursoSyncClient:
                     )
                     sync_mode = "direct_upload"
                 else:
+                    logger.error(
+                        "Turso %s sync failed after %sms: %s",
+                        direction,
+                        elapsed_ms,
+                        exc,
+                        exc_info=True,
+                    )
                     raise RuntimeError(
                         f"Turso {direction} sync failed: {exc}"
                     ) from exc
@@ -236,8 +330,17 @@ class TursoSyncClient:
             if connection is not None:
                 try:
                     connection.close()
-                except Exception:
-                    pass
+                except Exception as close_exc:
+                    logger.debug("Turso connection.close() ignored: %s", close_exc)
+
+        elapsed_ms = int((time.monotonic() - started) * 1000)
+        logger.info(
+            "Turso libsql sync OK: direction=%s mode=%s db_path=%s elapsed_ms=%s",
+            direction,
+            sync_mode,
+            self._db_path,
+            elapsed_ms,
+        )
 
         return {
             "status": "success",
@@ -289,8 +392,15 @@ def _push_local_sqlite_to_remote(db_path: str, sync_url: str, auth_token: str) -
             f"'{sys.executable} -m pip install libsql'."
         ) from exc
 
+    logger.info(
+        "Turso direct upload starting: db_path=%s remote=%s",
+        db_path,
+        describe_sync_url_for_logs(sync_url),
+    )
+    started = time.monotonic()
     local_conn = sqlite3.connect(db_path)
     remote_conn = libsql.connect(sync_url, auth_token=auth_token)
+    statements_run = 0
     try:
         remote_conn.execute("PRAGMA foreign_keys = OFF;")
         _drop_remote_user_objects(remote_conn)
@@ -305,13 +415,29 @@ def _push_local_sqlite_to_remote(db_path: str, sync_url: str, auth_token: str) -
             ):
                 continue
             remote_conn.execute(sql)
+            statements_run += 1
 
         remote_conn.commit()
     except Exception as exc:
+        elapsed_ms = int((time.monotonic() - started) * 1000)
+        logger.error(
+            "Turso direct upload failed after %sms (%s statements applied): %s",
+            elapsed_ms,
+            statements_run,
+            exc,
+            exc_info=True,
+        )
         raise RuntimeError(f"Failed to upload local SQLite DB to Turso: {exc}") from exc
     finally:
         remote_conn.close()
         local_conn.close()
+
+    elapsed_ms = int((time.monotonic() - started) * 1000)
+    logger.info(
+        "Turso direct upload finished: statements=%s elapsed_ms=%s",
+        statements_run,
+        elapsed_ms,
+    )
 
 
 def _drop_remote_user_objects(remote_conn) -> None:
