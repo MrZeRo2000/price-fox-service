@@ -2,6 +2,7 @@ import argparse
 import json
 import os
 import sys
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -15,6 +16,9 @@ from turso_sync import (
     load_turso_sync_configuration,
 )
 from version import APP_VERSION
+
+# Retries after the first attempt (4 tries total) for transient Turso/network failures.
+TURSO_SYNC_RETRY_COUNT = 3
 
 
 def _local_backup_note_before_turso_pull(db_path: str) -> str:
@@ -61,6 +65,122 @@ def _require_turso_push_success(push_result: dict, *, turso_config, logger) -> N
     )
     logger.error(msg)
     raise RuntimeError(msg)
+
+
+def _turso_pull_with_retries(
+    turso_sync_client: TursoSyncClient,
+    *,
+    phase: str,
+    logger,
+) -> dict:
+    total_attempts = 1 + TURSO_SYNC_RETRY_COUNT
+    last_exc: Exception | None = None
+    last_result: dict | None = None
+    for i in range(total_attempts):
+        attempt = i + 1
+        try:
+            result = turso_sync_client.pull_from_remote()
+        except Exception as exc:
+            last_exc = exc
+            last_result = None
+            logger.warning(
+                "Turso %s pull raised (attempt %s/%s): %s",
+                phase,
+                attempt,
+                total_attempts,
+                exc,
+            )
+            if attempt < total_attempts:
+                delay = min(2**i, 30)
+                logger.info(
+                    "Retrying Turso %s pull in %s second(s).", phase, delay
+                )
+                time.sleep(delay)
+            continue
+        last_exc = None
+        last_result = result
+        if result.get("status") == "success":
+            return result
+        if result.get("status") == "skipped":
+            return result
+        logger.warning(
+            "Turso %s pull non-success (attempt %s/%s): %s",
+            phase,
+            attempt,
+            total_attempts,
+            result,
+        )
+        if attempt < total_attempts:
+            delay = min(2**i, 30)
+            logger.info(
+                "Retrying Turso %s pull in %s second(s).", phase, delay
+            )
+            time.sleep(delay)
+    if last_exc is not None:
+        logger.error(
+            "Turso %s pull failed after %s attempts.", phase, total_attempts
+        )
+        raise last_exc
+    assert last_result is not None
+    return last_result
+
+
+def _turso_push_with_retries(
+    turso_sync_client: TursoSyncClient,
+    *,
+    phase: str,
+    logger,
+) -> dict:
+    total_attempts = 1 + TURSO_SYNC_RETRY_COUNT
+    last_exc: Exception | None = None
+    last_result: dict | None = None
+    for i in range(total_attempts):
+        attempt = i + 1
+        try:
+            result = turso_sync_client.push_to_remote()
+        except Exception as exc:
+            last_exc = exc
+            last_result = None
+            logger.warning(
+                "Turso %s push raised (attempt %s/%s): %s",
+                phase,
+                attempt,
+                total_attempts,
+                exc,
+            )
+            if attempt < total_attempts:
+                delay = min(2**i, 30)
+                logger.info(
+                    "Retrying Turso %s push in %s second(s).", phase, delay
+                )
+                time.sleep(delay)
+            continue
+        last_exc = None
+        last_result = result
+        if result.get("status") == "success":
+            return result
+        if result.get("status") == "skipped":
+            return result
+        logger.warning(
+            "Turso %s push non-success (attempt %s/%s): %s",
+            phase,
+            attempt,
+            total_attempts,
+            result,
+        )
+        if attempt < total_attempts:
+            delay = min(2**i, 30)
+            logger.info(
+                "Retrying Turso %s push in %s second(s).", phase, delay
+            )
+            time.sleep(delay)
+    if last_exc is not None:
+        logger.error(
+            "Turso %s push failed after %s attempts.", phase, total_attempts
+        )
+        raise last_exc
+    assert last_result is not None
+    return last_result
 
 
 def _log_resolved_configuration(
@@ -177,7 +297,9 @@ def main() -> int:
                     "Attempting bootstrap pull from Turso."
                 )
                 backup_note = ""
-                pull_result = turso_sync_client.pull_from_remote()
+                pull_result = _turso_pull_with_retries(
+                    turso_sync_client, phase="bootstrap", logger=logger
+                )
                 if pull_result["status"] == "success":
                     did_bootstrap_pull = True
                     logger.info(
@@ -218,7 +340,9 @@ def main() -> int:
                 backup_note = _local_backup_note_before_turso_pull(
                     configuration.product_catalog_db_path
                 )
-                pull_result = turso_sync_client.pull_from_remote()
+                pull_result = _turso_pull_with_retries(
+                    turso_sync_client, phase="pre-run", logger=logger
+                )
                 if pull_result["status"] == "success":
                     logger.info(
                         f"Turso pre-sync completed ({pull_result['direction']}) "
@@ -277,7 +401,9 @@ def main() -> int:
         persist_latest_scrape_results(configuration)
     if attempt_db_sync and turso_sync_client is not None:
         try:
-            push_result = turso_sync_client.push_to_remote()
+            push_result = _turso_push_with_retries(
+                turso_sync_client, phase="post-run", logger=logger
+            )
             if push_result["status"] == "success":
                 logger.info(
                     f"Turso post-sync completed ({push_result['direction']}) "
