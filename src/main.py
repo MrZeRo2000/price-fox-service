@@ -1,8 +1,6 @@
 import argparse
 import json
-import os
 import sys
-import time
 from datetime import datetime
 from pathlib import Path
 
@@ -12,176 +10,12 @@ from cfg import Configuration
 from config.settings import resolve_configuration_settings
 from turso_sync import (
     TursoSyncClient,
-    backup_sqlite_before_cloud_pull,
+    bootstrap_turso_pull_if_missing,
     load_turso_sync_configuration,
+    run_turso_post_sync_push,
+    run_turso_pre_sync_pull,
 )
 from version import APP_VERSION
-
-# Retries after the first attempt (4 tries total) for transient Turso/network failures.
-TURSO_SYNC_RETRY_COUNT = 3
-
-
-def _local_backup_note_before_turso_pull(db_path: str) -> str:
-    """If the catalog DB exists, back it up and return a log suffix; else ``''``."""
-    if not os.path.exists(db_path):
-        return ""
-    backup = backup_sqlite_before_cloud_pull(db_path)
-    if backup.get("status") == "success":
-        return f" Local backup: '{backup['backup_path']}'."
-    return ""
-
-
-def _require_turso_pull_success(
-    pull_result: dict,
-    *,
-    phase: str,
-    db_path: str,
-    turso_config,
-    logger,
-) -> None:
-    if pull_result.get("status") == "success":
-        return
-    reason = pull_result.get("reason", "unknown")
-    msg = (
-        f"Turso {phase} pull was required but did not succeed "
-        f"(status={pull_result.get('status')}, reason={reason}). "
-        f"Local catalog DB path: '{db_path}'. "
-        f"Update '{turso_config.config_path}' (set enabled=true and valid url/auth_token), "
-        f"or pass --config-path to use a JSON catalog and skip the SQLite DB."
-    )
-    logger.error(msg)
-    raise RuntimeError(msg)
-
-
-def _require_turso_push_success(push_result: dict, *, turso_config, logger) -> None:
-    if push_result.get("status") == "success":
-        return
-    reason = push_result.get("reason", "unknown")
-    msg = (
-        f"Turso push was required but did not complete "
-        f"(status={push_result.get('status')}, reason={reason}). "
-        f"Config: '{turso_config.config_path}'. "
-        f"Fix Turso settings or resolve the error above so the local DB is pushed to the remote."
-    )
-    logger.error(msg)
-    raise RuntimeError(msg)
-
-
-def _turso_pull_with_retries(
-    turso_sync_client: TursoSyncClient,
-    *,
-    phase: str,
-    logger,
-) -> dict:
-    total_attempts = 1 + TURSO_SYNC_RETRY_COUNT
-    last_exc: Exception | None = None
-    last_result: dict | None = None
-    for i in range(total_attempts):
-        attempt = i + 1
-        try:
-            result = turso_sync_client.pull_from_remote()
-        except Exception as exc:
-            last_exc = exc
-            last_result = None
-            logger.warning(
-                "Turso %s pull raised (attempt %s/%s): %s",
-                phase,
-                attempt,
-                total_attempts,
-                exc,
-            )
-            if attempt < total_attempts:
-                delay = min(2**i, 30)
-                logger.info(
-                    "Retrying Turso %s pull in %s second(s).", phase, delay
-                )
-                time.sleep(delay)
-            continue
-        last_exc = None
-        last_result = result
-        if result.get("status") == "success":
-            return result
-        if result.get("status") == "skipped":
-            return result
-        logger.warning(
-            "Turso %s pull non-success (attempt %s/%s): %s",
-            phase,
-            attempt,
-            total_attempts,
-            result,
-        )
-        if attempt < total_attempts:
-            delay = min(2**i, 30)
-            logger.info(
-                "Retrying Turso %s pull in %s second(s).", phase, delay
-            )
-            time.sleep(delay)
-    if last_exc is not None:
-        logger.error(
-            "Turso %s pull failed after %s attempts.", phase, total_attempts
-        )
-        raise last_exc
-    assert last_result is not None
-    return last_result
-
-
-def _turso_push_with_retries(
-    turso_sync_client: TursoSyncClient,
-    *,
-    phase: str,
-    logger,
-) -> dict:
-    total_attempts = 1 + TURSO_SYNC_RETRY_COUNT
-    last_exc: Exception | None = None
-    last_result: dict | None = None
-    for i in range(total_attempts):
-        attempt = i + 1
-        try:
-            result = turso_sync_client.push_to_remote()
-        except Exception as exc:
-            last_exc = exc
-            last_result = None
-            logger.warning(
-                "Turso %s push raised (attempt %s/%s): %s",
-                phase,
-                attempt,
-                total_attempts,
-                exc,
-            )
-            if attempt < total_attempts:
-                delay = min(2**i, 30)
-                logger.info(
-                    "Retrying Turso %s push in %s second(s).", phase, delay
-                )
-                time.sleep(delay)
-            continue
-        last_exc = None
-        last_result = result
-        if result.get("status") == "success":
-            return result
-        if result.get("status") == "skipped":
-            return result
-        logger.warning(
-            "Turso %s push non-success (attempt %s/%s): %s",
-            phase,
-            attempt,
-            total_attempts,
-            result,
-        )
-        if attempt < total_attempts:
-            delay = min(2**i, 30)
-            logger.info(
-                "Retrying Turso %s push in %s second(s).", phase, delay
-            )
-            time.sleep(delay)
-    if last_exc is not None:
-        logger.error(
-            "Turso %s push failed after %s attempts.", phase, total_attempts
-        )
-        raise last_exc
-    assert last_result is not None
-    return last_result
-
 
 def _log_resolved_configuration(
     logger,
@@ -291,34 +125,12 @@ def main() -> int:
                 config=turso_config,
                 db_path=db_path,
             )
-            if not os.path.exists(db_path):
-                logger.info(
-                    f"Local catalog DB is missing at '{db_path}'. "
-                    "Attempting bootstrap pull from Turso."
-                )
-                backup_note = ""
-                pull_result = _turso_pull_with_retries(
-                    turso_sync_client, phase="bootstrap", logger=logger
-                )
-                if pull_result["status"] == "success":
-                    did_bootstrap_pull = True
-                    logger.info(
-                        f"Turso bootstrap pull completed ({pull_result['direction']}) "
-                        f"for DB '{pull_result['db_path']}' via mode "
-                        f"'{pull_result.get('mode', 'unknown')}'.{backup_note}"
-                    )
-                _require_turso_pull_success(
-                    pull_result,
-                    phase="bootstrap",
-                    db_path=db_path,
-                    turso_config=turso_config,
-                    logger=logger,
-                )
-                if not os.path.exists(db_path):
-                    raise RuntimeError(
-                        f"Turso bootstrap pull reported success but local DB is still missing "
-                        f"at '{db_path}'."
-                    )
+            did_bootstrap_pull = bootstrap_turso_pull_if_missing(
+                turso_sync_client=turso_sync_client,
+                db_path=db_path,
+                turso_config=turso_config,
+                logger=logger,
+            )
 
         configuration = Configuration(
             data_path=args.data_path,
@@ -337,21 +149,8 @@ def main() -> int:
                     db_path=configuration.product_catalog_db_path,
                 )
             if not did_bootstrap_pull:
-                backup_note = _local_backup_note_before_turso_pull(
-                    configuration.product_catalog_db_path
-                )
-                pull_result = _turso_pull_with_retries(
-                    turso_sync_client, phase="pre-run", logger=logger
-                )
-                if pull_result["status"] == "success":
-                    logger.info(
-                        f"Turso pre-sync completed ({pull_result['direction']}) "
-                        f"for DB '{pull_result['db_path']}' via mode "
-                        f"'{pull_result.get('mode', 'unknown')}'.{backup_note}"
-                    )
-                _require_turso_pull_success(
-                    pull_result,
-                    phase="pre-run",
+                run_turso_pre_sync_pull(
+                    turso_sync_client=turso_sync_client,
                     db_path=configuration.product_catalog_db_path,
                     turso_config=turso_config,
                     logger=logger,
@@ -401,17 +200,10 @@ def main() -> int:
         persist_latest_scrape_results(configuration)
     if attempt_db_sync and turso_sync_client is not None:
         try:
-            push_result = _turso_push_with_retries(
-                turso_sync_client, phase="post-run", logger=logger
-            )
-            if push_result["status"] == "success":
-                logger.info(
-                    f"Turso post-sync completed ({push_result['direction']}) "
-                    f"for DB '{push_result['db_path']}' via mode "
-                    f"'{push_result.get('mode', 'unknown')}'."
-                )
-            _require_turso_push_success(
-                push_result, turso_config=turso_config, logger=logger
+            run_turso_post_sync_push(
+                turso_sync_client=turso_sync_client,
+                turso_config=turso_config,
+                logger=logger,
             )
         except Exception as exc:
             logger.error(f"Turso push failed: {exc}")

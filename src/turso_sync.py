@@ -24,6 +24,8 @@ logger = logging.getLogger(__name__)
 BACKUP_DATE_FOLDER_FORMAT = "%Y_%m_%d"
 BACKUP_RETENTION_COUNT = 10
 _BACKUP_DIR_NAME_PATTERN = re.compile(r"^\d{4}_\d{2}_\d{2}$")
+# Retries after the first attempt (4 tries total) for transient Turso/network failures.
+TURSO_SYNC_RETRY_COUNT = 3
 
 
 @dataclass(frozen=True)
@@ -349,6 +351,329 @@ class TursoSyncClient:
             "db_path": self._db_path,
             "remote_url": self._config.url,
         }
+
+
+def _log_turso_sync_event(
+    *, logger: logging.Logger, event: str, phase: str, operation: str, **payload
+) -> None:
+    details = ", ".join(f"{key}={value!r}" for key, value in sorted(payload.items()))
+    if details:
+        logger.info(
+            "Turso sync event=%s phase=%s operation=%s %s",
+            event,
+            phase,
+            operation,
+            details,
+        )
+        return
+    logger.info("Turso sync event=%s phase=%s operation=%s", event, phase, operation)
+
+
+def _local_backup_note_before_turso_pull(db_path: str) -> str:
+    """If the catalog DB exists, back it up and return a log suffix; else ``''``."""
+    if not os.path.exists(db_path):
+        return ""
+    backup = backup_sqlite_before_cloud_pull(db_path)
+    if backup.get("status") == "success":
+        return f" Local backup: '{backup['backup_path']}'."
+    return ""
+
+
+def _turso_pull_with_retries(
+    turso_sync_client: TursoSyncClient,
+    *,
+    phase: str,
+    logger: logging.Logger,
+) -> dict:
+    total_attempts = 1 + TURSO_SYNC_RETRY_COUNT
+    last_exc: Exception | None = None
+    last_result: dict | None = None
+    for i in range(total_attempts):
+        attempt = i + 1
+        try:
+            result = turso_sync_client.pull_from_remote()
+        except Exception as exc:
+            last_exc = exc
+            last_result = None
+            logger.warning(
+                "Turso %s pull raised (attempt %s/%s): %s",
+                phase,
+                attempt,
+                total_attempts,
+                exc,
+            )
+            if attempt < total_attempts:
+                delay = min(2**i, 30)
+                logger.info("Retrying Turso %s pull in %s second(s).", phase, delay)
+                time.sleep(delay)
+            continue
+        last_exc = None
+        last_result = result
+        if result.get("status") == "success":
+            return result
+        if result.get("status") == "skipped":
+            return result
+        logger.warning(
+            "Turso %s pull non-success (attempt %s/%s): %s",
+            phase,
+            attempt,
+            total_attempts,
+            result,
+        )
+        if attempt < total_attempts:
+            delay = min(2**i, 30)
+            logger.info("Retrying Turso %s pull in %s second(s).", phase, delay)
+            time.sleep(delay)
+    if last_exc is not None:
+        logger.error("Turso %s pull failed after %s attempts.", phase, total_attempts)
+        raise last_exc
+    assert last_result is not None
+    return last_result
+
+
+def _turso_push_with_retries(
+    turso_sync_client: TursoSyncClient,
+    *,
+    phase: str,
+    logger: logging.Logger,
+) -> dict:
+    total_attempts = 1 + TURSO_SYNC_RETRY_COUNT
+    last_exc: Exception | None = None
+    last_result: dict | None = None
+    for i in range(total_attempts):
+        attempt = i + 1
+        try:
+            result = turso_sync_client.push_to_remote()
+        except Exception as exc:
+            last_exc = exc
+            last_result = None
+            logger.warning(
+                "Turso %s push raised (attempt %s/%s): %s",
+                phase,
+                attempt,
+                total_attempts,
+                exc,
+            )
+            if attempt < total_attempts:
+                delay = min(2**i, 30)
+                logger.info("Retrying Turso %s push in %s second(s).", phase, delay)
+                time.sleep(delay)
+            continue
+        last_exc = None
+        last_result = result
+        if result.get("status") == "success":
+            return result
+        if result.get("status") == "skipped":
+            return result
+        logger.warning(
+            "Turso %s push non-success (attempt %s/%s): %s",
+            phase,
+            attempt,
+            total_attempts,
+            result,
+        )
+        if attempt < total_attempts:
+            delay = min(2**i, 30)
+            logger.info("Retrying Turso %s push in %s second(s).", phase, delay)
+            time.sleep(delay)
+    if last_exc is not None:
+        logger.error("Turso %s push failed after %s attempts.", phase, total_attempts)
+        raise last_exc
+    assert last_result is not None
+    return last_result
+
+
+def _require_turso_pull_success(
+    pull_result: dict,
+    *,
+    phase: str,
+    db_path: str,
+    turso_config: TursoSyncConfiguration,
+    logger: logging.Logger,
+) -> None:
+    if pull_result.get("status") == "success":
+        return
+    reason = pull_result.get("reason", "unknown")
+    msg = (
+        f"Turso {phase} pull was required but did not succeed "
+        f"(status={pull_result.get('status')}, reason={reason}). "
+        f"Local catalog DB path: '{db_path}'. "
+        f"Update '{turso_config.config_path}' (set enabled=true and valid url/auth_token), "
+        f"or pass --config-path to use a JSON catalog and skip the SQLite DB."
+    )
+    logger.error(msg)
+    raise RuntimeError(msg)
+
+
+def _require_turso_push_success(
+    push_result: dict, *, turso_config: TursoSyncConfiguration, logger: logging.Logger
+) -> None:
+    if push_result.get("status") == "success":
+        return
+    reason = push_result.get("reason", "unknown")
+    msg = (
+        f"Turso push was required but did not complete "
+        f"(status={push_result.get('status')}, reason={reason}). "
+        f"Config: '{turso_config.config_path}'. "
+        f"Fix Turso settings or resolve the error above so the local DB is pushed to the remote."
+    )
+    logger.error(msg)
+    raise RuntimeError(msg)
+
+
+def bootstrap_turso_pull_if_missing(
+    *,
+    turso_sync_client: TursoSyncClient,
+    db_path: str,
+    turso_config: TursoSyncConfiguration,
+    logger: logging.Logger,
+) -> bool:
+    """Pull from Turso when local DB file is missing. Returns whether a pull ran."""
+    if os.path.exists(db_path):
+        return False
+
+    _log_turso_sync_event(
+        logger=logger,
+        event="start",
+        phase="bootstrap",
+        operation="pull",
+        db_path=db_path,
+    )
+    logger.info(
+        "Local catalog DB is missing at '%s'. Attempting bootstrap pull from Turso.",
+        db_path,
+    )
+    pull_result = _turso_pull_with_retries(
+        turso_sync_client, phase="bootstrap", logger=logger
+    )
+    _log_turso_sync_event(
+        logger=logger,
+        event="progress",
+        phase="bootstrap",
+        operation="pull",
+        status=pull_result.get("status"),
+        direction=pull_result.get("direction"),
+        mode=pull_result.get("mode", "unknown"),
+    )
+    if pull_result["status"] == "success":
+        logger.info(
+            "Turso bootstrap pull completed (%s) for DB '%s' via mode '%s'.",
+            pull_result["direction"],
+            pull_result["db_path"],
+            pull_result.get("mode", "unknown"),
+        )
+    _require_turso_pull_success(
+        pull_result,
+        phase="bootstrap",
+        db_path=db_path,
+        turso_config=turso_config,
+        logger=logger,
+    )
+    if not os.path.exists(db_path):
+        raise RuntimeError(
+            f"Turso bootstrap pull reported success but local DB is still missing at '{db_path}'."
+        )
+    _log_turso_sync_event(
+        logger=logger,
+        event="completed",
+        phase="bootstrap",
+        operation="pull",
+        db_path=db_path,
+    )
+    return True
+
+
+def run_turso_pre_sync_pull(
+    *,
+    turso_sync_client: TursoSyncClient,
+    db_path: str,
+    turso_config: TursoSyncConfiguration,
+    logger: logging.Logger,
+) -> None:
+    _log_turso_sync_event(
+        logger=logger,
+        event="start",
+        phase="pre-run",
+        operation="pull",
+        db_path=db_path,
+    )
+    backup_note = _local_backup_note_before_turso_pull(db_path)
+    pull_result = _turso_pull_with_retries(turso_sync_client, phase="pre-run", logger=logger)
+    _log_turso_sync_event(
+        logger=logger,
+        event="progress",
+        phase="pre-run",
+        operation="pull",
+        status=pull_result.get("status"),
+        direction=pull_result.get("direction"),
+        mode=pull_result.get("mode", "unknown"),
+    )
+    if pull_result["status"] == "success":
+        logger.info(
+            "Turso pre-sync completed (%s) for DB '%s' via mode '%s'.%s",
+            pull_result["direction"],
+            pull_result["db_path"],
+            pull_result.get("mode", "unknown"),
+            backup_note,
+        )
+    _require_turso_pull_success(
+        pull_result,
+        phase="pre-run",
+        db_path=db_path,
+        turso_config=turso_config,
+        logger=logger,
+    )
+    _log_turso_sync_event(
+        logger=logger,
+        event="completed",
+        phase="pre-run",
+        operation="pull",
+        db_path=db_path,
+    )
+
+
+def run_turso_post_sync_push(
+    *,
+    turso_sync_client: TursoSyncClient,
+    turso_config: TursoSyncConfiguration,
+    logger: logging.Logger,
+) -> None:
+    _log_turso_sync_event(
+        logger=logger,
+        event="start",
+        phase="post-run",
+        operation="push",
+        db_path=turso_sync_client.db_path,
+    )
+    push_result = _turso_push_with_retries(turso_sync_client, phase="post-run", logger=logger)
+    _log_turso_sync_event(
+        logger=logger,
+        event="progress",
+        phase="post-run",
+        operation="push",
+        status=push_result.get("status"),
+        direction=push_result.get("direction"),
+        mode=push_result.get("mode", "unknown"),
+    )
+    if push_result["status"] == "success":
+        logger.info(
+            "Turso post-sync completed (%s) for DB '%s' via mode '%s'.",
+            push_result["direction"],
+            push_result["db_path"],
+            push_result.get("mode", "unknown"),
+        )
+    _require_turso_push_success(
+        push_result,
+        turso_config=turso_config,
+        logger=logger,
+    )
+    _log_turso_sync_event(
+        logger=logger,
+        event="completed",
+        phase="post-run",
+        operation="push",
+        db_path=turso_sync_client.db_path,
+    )
 
 
 def _connect_libsql(db_path: str, sync_url: str, auth_token: str):

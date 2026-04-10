@@ -1,5 +1,6 @@
 import os
 import sqlite3
+from datetime import datetime, timedelta
 from typing import Optional
 
 
@@ -7,6 +8,7 @@ class ScrapeDetailedRepository:
     """Repository responsible for scrape_detailed table communication."""
 
     TABLE_NAME = "scrape_detailed"
+    RETENTION_DAYS = 30
 
     def __init__(self, db_path: str):
         if not os.path.exists(db_path):
@@ -46,6 +48,16 @@ class ScrapeDetailedRepository:
                     ),
                     rows,
                 )
+                cutoff_date = int(
+                    (
+                        datetime.strptime(str(session_date), "%Y%m%d")
+                        - timedelta(days=self.RETENTION_DAYS - 1)
+                    ).strftime("%Y%m%d")
+                )
+                purged_rows = connection.execute(
+                    f"DELETE FROM {self.TABLE_NAME} WHERE session_date < ?",
+                    (cutoff_date,),
+                ).rowcount
         except sqlite3.OperationalError as exc:
             if "no such table" in str(exc).lower():
                 raise RuntimeError(
@@ -57,4 +69,7 @@ class ScrapeDetailedRepository:
             "session_date": session_date,
             "deleted_rows": deleted_rows if deleted_rows is not None else 0,
             "saved_rows": len(rows),
+            "purged_rows": purged_rows if purged_rows is not None else 0,
+            "retention_days": self.RETENTION_DAYS,
+            "retention_cutoff_date": cutoff_date,
         }

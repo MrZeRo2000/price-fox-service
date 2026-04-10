@@ -62,7 +62,10 @@ def persist_latest_scrape_results(configuration: Configuration) -> dict:
     stats_results = scrape_stats_processor.refresh()
     logger.info(
         f"Persisted scrape session_date={persisted_results['session_date']} "
-        f"(deleted={persisted_results['deleted_rows']}, saved={persisted_results['saved_rows']})."
+        f"(deleted={persisted_results['deleted_rows']}, saved={persisted_results['saved_rows']}, "
+        f"purged_old={persisted_results['purged_rows']}, "
+        f"retention_days={persisted_results['retention_days']}, "
+        f"cutoff={persisted_results['retention_cutoff_date']})."
     )
     logger.info(
         f"Refreshed scrape_consolidated for session_date={consolidated_results['session_date']} "
@@ -80,6 +83,9 @@ def persist_latest_scrape_results(configuration: Configuration) -> dict:
         "session_date": persisted_results["session_date"],
         "deleted_rows": persisted_results["deleted_rows"],
         "saved_rows": persisted_results["saved_rows"],
+        "purged_rows": persisted_results["purged_rows"],
+        "retention_days": persisted_results["retention_days"],
+        "retention_cutoff_date": persisted_results["retention_cutoff_date"],
         "consolidated": consolidated_results,
         "analysis": analysis_results,
         "stats": stats_results,
