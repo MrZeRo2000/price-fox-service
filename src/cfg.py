@@ -16,7 +16,7 @@ class TursoConfiguration:
     config_path: str
 
 
-class Configuration:
+class CatalogConfig:
     """Class for configuration"""
     def __init__(
         self,

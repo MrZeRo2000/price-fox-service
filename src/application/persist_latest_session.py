@@ -1,4 +1,4 @@
-from cfg import Configuration
+from cfg import CatalogConfig
 from collector import ScrapeDetailedCollector
 from processor import (
     ScrapeAnalysisProcessor,
@@ -8,9 +8,9 @@ from processor import (
 from repositories import ScrapeDetailedRepository
 
 
-def persist_latest_scrape_results(configuration: Configuration) -> dict:
-    logger = configuration.logger
-    if configuration.product_catalog_db_path is None:
+def persist_latest_scrape_results(catalog_config: CatalogConfig) -> dict:
+    logger = catalog_config.logger
+    if catalog_config.product_catalog_db_path is None:
         logger.warning(
             "Skipping scrape result persistence because product catalog DB path is not configured."
         )
@@ -24,7 +24,7 @@ def persist_latest_scrape_results(configuration: Configuration) -> dict:
         }
 
     scrape_detailed_collector = ScrapeDetailedCollector(
-        data_path=configuration.data_path,
+        data_path=catalog_config.data_path,
         logger=logger,
     )
     session_date, rows = scrape_detailed_collector.collect_latest_session_rows()
@@ -40,24 +40,24 @@ def persist_latest_scrape_results(configuration: Configuration) -> dict:
         }
 
     scrape_detailed_repository = ScrapeDetailedRepository(
-        db_path=configuration.product_catalog_db_path
+        db_path=catalog_config.product_catalog_db_path
     )
     persisted_results = scrape_detailed_repository.replace_session_rows(
         session_date=session_date,
         rows=rows,
     )
     scrape_consolidated_processor = ScrapeConsolidatedProcessor(
-        db_path=configuration.product_catalog_db_path
+        db_path=catalog_config.product_catalog_db_path
     )
     consolidated_results = scrape_consolidated_processor.replace_for_session(
         session_date=session_date
     )
     scrape_analysis_processor = ScrapeAnalysisProcessor(
-        db_path=configuration.product_catalog_db_path
+        db_path=catalog_config.product_catalog_db_path
     )
     analysis_results = scrape_analysis_processor.refresh()
     scrape_stats_processor = ScrapeStatsProcessor(
-        db_path=configuration.product_catalog_db_path
+        db_path=catalog_config.product_catalog_db_path
     )
     stats_results = scrape_stats_processor.refresh()
     logger.info(

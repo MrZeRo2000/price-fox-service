@@ -10,7 +10,7 @@ from huggingface_hub import snapshot_download
 from repositories import PriceStrategyRepository
 from transformers import pipeline
 
-from cfg import Configuration
+from cfg import CatalogConfig
 from scraper.parse_strategies import GeminiUrlParseStrategy
 from session import resolve_parser_data_root
 
@@ -20,19 +20,19 @@ class Parser:
     Parses fetched page content and extracts product pricing using Hugging Face.
     """
 
-    def __init__(self, configuration: Configuration, model_id: str = "Qwen/Qwen2.5-1.5B-Instruct"):
-        self.configuration = configuration
-        self.logger = configuration.logger
+    def __init__(self, catalog_config: CatalogConfig, model_id: str = "Qwen/Qwen2.5-1.5B-Instruct"):
+        self.catalog_config = catalog_config
+        self.logger = catalog_config.logger
         self.model_id = model_id
         self.generator = None
         self.generator_task = None
         self._generator_init_error = None
         self._product_name_by_id = {
-            product.id: product.name for product in self.configuration.product_catalog_data.products
+            product.id: product.name for product in self.catalog_config.product_catalog_data.products
         }
         self._url_by_id = {
             item.url_id: str(item.url)
-            for item in self.configuration.product_catalog_data.urls
+            for item in self.catalog_config.product_catalog_data.urls
         }
         self._default_price_strategy = "playwright"
         self._site_price_strategy_overrides = self._load_site_price_strategy_overrides()
@@ -97,7 +97,7 @@ class Parser:
         return self._load_site_price_strategy_overrides_from_database()
 
     def _load_site_price_strategy_overrides_from_database(self) -> dict[str, str]:
-        db_path = self.configuration.product_catalog_db_path
+        db_path = self.catalog_config.product_catalog_db_path
         if not db_path:
             return {}
         try:
@@ -118,7 +118,7 @@ class Parser:
         return normalized
 
     def _load_strategy_settings_from_database(self) -> dict[str, str]:
-        db_path = self.configuration.product_catalog_db_path
+        db_path = self.catalog_config.product_catalog_db_path
         if not db_path:
             return {}
         try:
@@ -1010,7 +1010,7 @@ class Parser:
         return result
 
     def execute(self) -> list[dict]:
-        base_data_root = Path(self.configuration.data_path)
+        base_data_root = Path(self.catalog_config.data_path)
         data_root = self._resolve_data_root(base_data_root)
         all_results = []
 

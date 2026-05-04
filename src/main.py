@@ -6,7 +6,7 @@ from pathlib import Path
 
 from application import persist_latest_scrape_results, run_pipeline
 from logger import create_application_logger
-from cfg import Configuration
+from cfg import CatalogConfig
 from config.settings import resolve_configuration_settings
 from turso_sync import (
     TursoSyncClient,
@@ -19,21 +19,21 @@ from version import APP_VERSION
 
 def _log_resolved_configuration(
     logger,
-    configuration: Configuration,
+    catalog_config: CatalogConfig,
     args: argparse.Namespace,
     turso_attempt_db_sync: bool,
 ) -> None:
     catalog_source = (
         "json_file"
-        if configuration.product_catalog_path is not None
+        if catalog_config.product_catalog_path is not None
         else "sqlite_database"
     )
 
     resolved_configuration = {
         "paths": {
-            "data_path": configuration.data_path,
-            "product_catalog_path": configuration.product_catalog_path,
-            "product_catalog_db_path": configuration.product_catalog_db_path,
+            "data_path": catalog_config.data_path,
+            "product_catalog_path": catalog_config.product_catalog_path,
+            "product_catalog_db_path": catalog_config.product_catalog_db_path,
         },
         "runtime": {
             "parse_only": args.parse_only,
@@ -117,7 +117,6 @@ def main() -> int:
 
     try:
         turso_sync_client = None
-        did_bootstrap_pull = False
 
         if attempt_db_sync:
             db_path = resolved_settings.product_catalog_db_path
@@ -131,31 +130,25 @@ def main() -> int:
                 turso_config=turso_config,
                 logger=logger,
             )
+            if not did_bootstrap_pull:
+                run_turso_pre_sync_pull(
+                    turso_sync_client=turso_sync_client,
+                    db_path=db_path,
+                    turso_config=turso_config,
+                    logger=logger,
+                )
 
-        configuration = Configuration(
+        catalog_config = CatalogConfig(
             data_path=args.data_path,
             config_path=args.config_path,
             db_path=args.db_path,
         )
-        logger = configuration.logger
+        logger = catalog_config.logger
         _log_resolved_configuration(
-            logger, configuration, args, turso_attempt_db_sync=attempt_db_sync
+            logger, catalog_config, args, turso_attempt_db_sync=attempt_db_sync
         )
 
-        if attempt_db_sync and configuration.product_catalog_db_path is not None:
-            if turso_sync_client is None:
-                turso_sync_client = TursoSyncClient(
-                    config=turso_config,
-                    db_path=configuration.product_catalog_db_path,
-                )
-            if not did_bootstrap_pull:
-                run_turso_pre_sync_pull(
-                    turso_sync_client=turso_sync_client,
-                    db_path=configuration.product_catalog_db_path,
-                    turso_config=turso_config,
-                    logger=logger,
-                )
-        elif args.sync and not use_sqlite_catalog:
+        if args.sync and not use_sqlite_catalog:
             logger.info(
                 "Turso sync was not applied: product catalog is loaded from JSON (--config-path)."
             )
@@ -172,12 +165,12 @@ def main() -> int:
 
         if args.collect_only:
             result = run_pipeline(
-                configuration,
+                catalog_config,
                 parse_only=args.parse_only,
                 collect_only=args.collect_only,
             )
         else:
-            result = run_pipeline(configuration, parse_only=args.parse_only)
+            result = run_pipeline(catalog_config, parse_only=args.parse_only)
 
     except Exception as exc:
         logger.error(f"Scraper failed: {exc}")
@@ -197,7 +190,7 @@ def main() -> int:
     logger.info(f"Parsed records: {len(parse_results)}")
     logger.info(f"Successful parses: {successful_parses}")
     if not args.collect_only:
-        persist_latest_scrape_results(configuration)
+        persist_latest_scrape_results(catalog_config)
     if attempt_db_sync and turso_sync_client is not None:
         try:
             run_turso_post_sync_push(

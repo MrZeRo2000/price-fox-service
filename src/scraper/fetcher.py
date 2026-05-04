@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from cfg import Configuration
+from cfg import CatalogConfig
 from models import ScrapeSession
 from .fetch_strategies import (
     FetchStrategy,
@@ -10,13 +10,13 @@ from .fetch_strategies import (
 
 
 class Fetcher:
-    def __init__(self, configuration: Configuration, scrape_session: ScrapeSession):
-        self.configuration = configuration
+    def __init__(self, catalog_config: CatalogConfig, scrape_session: ScrapeSession):
+        self.catalog_config = catalog_config
         self.scrape_session = scrape_session
         self._strategy_settings = self._load_strategy_settings()
 
     def _prepare_output_path(self) -> Path:
-        base_data_root = Path(self.configuration.data_path)
+        base_data_root = Path(self.catalog_config.data_path)
         base_data_root.mkdir(parents=True, exist_ok=True)
         scrape_root = base_data_root / "scrape"
         scrape_root.mkdir(parents=True, exist_ok=True)
@@ -52,10 +52,10 @@ class Fetcher:
         return result
 
     def _build_fetch_strategy(self) -> tuple[str, FetchStrategy]:
-        strategy_name = (self.configuration.fetch_strategy or "playwright").lower()
+        strategy_name = (self.catalog_config.fetch_strategy or "playwright").lower()
         if strategy_name == "jina":
             return strategy_name, JinaFetchStrategy(
-                rate_limit_rpm=self.configuration.jina_rate_limit_rpm
+                rate_limit_rpm=self.catalog_config.jina_rate_limit_rpm
             )
         return "playwright", PlaywrightFetchStrategy()
 
@@ -63,7 +63,7 @@ class Fetcher:
         self.scrape_session.fetch_start_datetime = datetime.today()
         data_root = self._prepare_output_path()
         url_by_id = {
-            url.url_id: str(url.url) for url in self.configuration.product_catalog_data.urls
+            url.url_id: str(url.url) for url in self.catalog_config.product_catalog_data.urls
         }
         jobs = [
             {
@@ -71,7 +71,7 @@ class Fetcher:
                 "url_id": url_id,
                 "url": url_by_id[url_id],
             }
-            for product in self.configuration.product_catalog_data.products
+            for product in self.catalog_config.product_catalog_data.products
             for url_id in product.url_ids
         ]
 
@@ -81,14 +81,14 @@ class Fetcher:
 
         urls = [job["url"] for job in jobs]
         strategy_name, fetch_strategy = self._build_fetch_strategy()
-        self.configuration.logger.info(
+        self.catalog_config.logger.info(
             f"Using fetch strategy: {strategy_name} "
-            f"(jina_rate_limit_rpm={self.configuration.jina_rate_limit_rpm})"
+            f"(jina_rate_limit_rpm={self.catalog_config.jina_rate_limit_rpm})"
         )
         raw_results = fetch_strategy.fetch_batch(
             urls=urls,
             output_dir=str(data_root),
-            logger=self.configuration.logger,
+            logger=self.catalog_config.logger,
         )
 
         all_results = []
@@ -137,7 +137,7 @@ from urllib.parse import urlparse
 
 from playwright.sync_api import sync_playwright
 
-from cfg import Configuration
+from cfg import CatalogConfig
 from models import ScrapeSession
 from repositories import PriceStrategyRepository
 from session.constants import DATA_SESSION_FOLDER_DATETIME_FORMAT
@@ -436,8 +436,8 @@ class JinaFetchStrategy(FetchStrategy):
 
 
 class Fetcher:
-    def __init__(self, configuration: Configuration, scrape_session: ScrapeSession):
-        self.configuration = configuration
+    def __init__(self, catalog_config: CatalogConfig, scrape_session: ScrapeSession):
+        self.catalog_config = catalog_config
         self.scrape_session = scrape_session
         self._strategy_settings = self._load_strategy_settings()
 
@@ -1633,7 +1633,7 @@ class Fetcher:
         """
         Create and return this run's timestamped session output root.
         """
-        base_data_root = Path(self.configuration.data_path)
+        base_data_root = Path(self.catalog_config.data_path)
         base_data_root.mkdir(parents=True, exist_ok=True)
         scrape_root = base_data_root / "scrape"
         scrape_root.mkdir(parents=True, exist_ok=True)
@@ -1692,14 +1692,14 @@ class Fetcher:
         return parsed if parsed > 0 else fallback
 
     def _load_strategy_settings(self) -> dict[str, str]:
-        db_path = self.configuration.product_catalog_db_path
+        db_path = self.catalog_config.product_catalog_db_path
         if not db_path:
             return {}
         try:
             repository = PriceStrategyRepository(db_path)
             return repository.load_settings()
         except Exception as exc:
-            self.configuration.logger.warning(
+            self.catalog_config.logger.warning(
                 f"Unable to load fetch strategy settings from DB '{db_path}': {exc}"
             )
             return {}
@@ -1709,14 +1709,14 @@ class Fetcher:
         return self._to_positive_int(raw_value, fallback=20)
 
     def _load_site_fetch_strategy_overrides(self) -> dict[str, str]:
-        db_path = self.configuration.product_catalog_db_path
+        db_path = self.catalog_config.product_catalog_db_path
         if not db_path:
             return {}
         try:
             repository = PriceStrategyRepository(db_path)
             raw_mapping = repository.load_domain_strategy_overrides()
         except Exception as exc:
-            self.configuration.logger.warning(
+            self.catalog_config.logger.warning(
                 f"Unable to load fetch strategy domains from DB '{db_path}': {exc}"
             )
             return {}
@@ -1766,7 +1766,7 @@ class Fetcher:
         data_root = self._prepare_output_path()
         url_by_id = {
             url.url_id: str(url.url)
-            for url in self.configuration.product_catalog_data.urls
+            for url in self.catalog_config.product_catalog_data.urls
         }
         jobs = [
             {
@@ -1774,7 +1774,7 @@ class Fetcher:
                 "url_id": url_id,
                 "url": url_by_id[url_id],
             }
-            for product in self.configuration.product_catalog_data.products
+            for product in self.catalog_config.product_catalog_data.products
             for url_id in product.url_ids
         ]
 
@@ -1786,7 +1786,7 @@ class Fetcher:
             self._strategy_settings.get("default_fetch_strategy", "playwright")
         )
         site_overrides = self._load_site_fetch_strategy_overrides()
-        self.configuration.logger.info(
+        self.catalog_config.logger.info(
             f"Using DB-configurable fetch strategies "
             f"(default={default_strategy}, jina_rate_limit_rpm={self._jina_rate_limit_rpm()})"
         )
@@ -1798,7 +1798,7 @@ class Fetcher:
                 site_overrides=site_overrides,
                 default_strategy=default_strategy,
             )
-            self.configuration.logger.info(
+            self.catalog_config.logger.info(
                 f"Planned fetch strategy for url_id={job['url_id']} "
                 f"({job['url']}): {strategy}"
             )
@@ -1808,13 +1808,13 @@ class Fetcher:
         for strategy_name, indexed_jobs in jobs_by_strategy.items():
             strategy_urls = [job["url"] for _, job in indexed_jobs]
             fetch_strategy = self._build_fetch_strategy(strategy_name)
-            self.configuration.logger.info(
+            self.catalog_config.logger.info(
                 f"Fetching {len(strategy_urls)} URL(s) with strategy '{strategy_name}'"
             )
             strategy_results = fetch_strategy.fetch_batch(
                 urls=strategy_urls,
                 output_dir=str(data_root),
-                logger=self.configuration.logger,
+                logger=self.catalog_config.logger,
             )
             for (index, _), result in zip(indexed_jobs, strategy_results):
                 raw_results_by_index[index] = result
