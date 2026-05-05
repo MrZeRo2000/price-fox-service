@@ -1,5 +1,6 @@
 import json
 import re
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -13,6 +14,13 @@ from transformers import pipeline
 from cfg import CatalogConfig
 from scraper.parse_strategies import GeminiUrlParseStrategy
 from session import resolve_parser_data_root
+
+
+@dataclass
+class TextSources:
+    html_path: Optional[str]
+    txt_path: Optional[str]
+    text: str
 
 
 class Parser:
@@ -151,9 +159,9 @@ class Parser:
                     best_strategy = strategy
         return best_strategy
 
-    def _extract_price_with_default_pipeline(self, source: dict) -> dict:
+    def _extract_price_with_default_pipeline(self, source: TextSources) -> dict:
         try:
-            extracted = self._extract_price_with_hf(source["text"])
+            extracted = self._extract_price_with_hf(source.text)
         except Exception as exc:
             extracted = {
                 "status": "failed",
@@ -168,13 +176,13 @@ class Parser:
             }
 
         if extracted.get("price") is None or extracted.get("price_type") != "product":
-            html_candidate = self._extract_from_html_attributes(source["html_path"])
-            text_candidate = self._extract_from_text_candidates(source["text"])
+            html_candidate = self._extract_from_html_attributes(source.html_path)
+            text_candidate = self._extract_from_text_candidates(source.text)
             if html_candidate is not None and text_candidate is not None:
                 fallback = (
-                    html_candidate
-                    if html_candidate["confidence"] >= text_candidate["confidence"]
-                    else text_candidate
+                    text_candidate
+                    if text_candidate["confidence"] - html_candidate["confidence"] > 0.2
+                    else html_candidate
                 )
             else:
                 fallback = html_candidate or text_candidate
@@ -228,7 +236,7 @@ class Parser:
         return matches[0] if matches else None
 
     @staticmethod
-    def _read_text_sources(url_folder: Path) -> dict:
+    def _read_text_sources(url_folder: Path) -> TextSources:
         html_file = Parser._find_primary_file(url_folder, "html")
         txt_file = Parser._find_primary_file(url_folder, "txt")
 
@@ -249,11 +257,11 @@ class Parser:
         combined_text = re.sub(r"[ \t]+", " ", combined_text)
         combined_text = re.sub(r"\n{3,}", "\n\n", combined_text).strip()
 
-        return {
-            "html_path": str(html_file) if html_file is not None else None,
-            "txt_path": str(txt_file) if txt_file is not None else None,
-            "text": combined_text,
-        }
+        return TextSources(
+            html_path=str(html_file) if html_file is not None else None,
+            txt_path=str(txt_file) if txt_file is not None else None,
+            text=combined_text,
+        )
 
     @staticmethod
     def _chunk_text(text: str, chunk_size: int = 24000, overlap: int = 2000) -> list[str]:
@@ -443,7 +451,7 @@ class Parser:
         if not filtered or filtered.count(".") > 1:
             return None
         try:
-            value = float(filtered)
+            value = round(float(filtered), 2)
         except ValueError:
             return None
         if value <= 0 or value > 1_000_000:
@@ -540,7 +548,7 @@ class Parser:
         )
 
         best = None
-        number_pattern = re.compile(r"[-−–]?\d{1,6}(?:[ \u00A0]?\d{3})*(?:[.,]\d{1,2})?")
+        number_pattern = re.compile(r"[-−–]?\d{1,6}(?:[ \u00A0]?\d{3})*(?:[.,]\d{1,3})?")
 
         # Prefer explicit structured product metadata when present.
         for script in soup.select("script[type='application/ld+json']"):
@@ -886,6 +894,10 @@ class Parser:
             "details": parsing_errors[:3],
         }
 
+    def parse_file(self, html_path: str | Path) -> dict:
+        source = self._read_text_sources(Path(html_path).parent)
+        return self._extract_price_with_default_pipeline(source)
+
     def _parse_single_folder(self, product_id: int, url_id: int, url_folder: Path) -> dict:
         parse_started_at_dt = datetime.utcnow()
         parse_started_at = parse_started_at_dt.isoformat()
@@ -896,7 +908,7 @@ class Parser:
             f"({url if url is not None else 'unknown'}): {selected_strategy}"
         )
         source = self._read_text_sources(url_folder)
-        if not source["text"]:
+        if not source.text:
             if selected_strategy == "gemini_url":
                 gemini_candidate = self._gemini_url_strategy.extract_price_from_url(url)
             else:
@@ -925,8 +937,8 @@ class Parser:
                     "parse_finished_at": parse_finished_at,
                     "parse_duration_seconds": parse_duration_seconds,
                     "parsed_at": parse_finished_at,
-                    "html_path": source["html_path"],
-                    "txt_path": source["txt_path"],
+                    "html_path": source.html_path,
+                    "txt_path": source.txt_path,
                 }
                 (url_folder / "parsed.json").write_text(
                     json.dumps(result, indent=2, ensure_ascii=False),
@@ -965,8 +977,8 @@ class Parser:
                 "parse_finished_at": parse_finished_at,
                 "parse_duration_seconds": parse_duration_seconds,
                 "parsed_at": parse_finished_at,
-                "html_path": source["html_path"],
-                "txt_path": source["txt_path"],
+                "html_path": source.html_path,
+                "txt_path": source.txt_path,
             }
             (url_folder / "parsed.json").write_text(
                 json.dumps(result, indent=2, ensure_ascii=False),
@@ -1000,8 +1012,8 @@ class Parser:
             "parse_finished_at": parse_finished_at,
             "parse_duration_seconds": parse_duration_seconds,
             "parsed_at": parse_finished_at,
-            "html_path": source["html_path"],
-            "txt_path": source["txt_path"],
+            "html_path": source.html_path,
+            "txt_path": source.txt_path,
         }
         (url_folder / "parsed.json").write_text(
             json.dumps(result, indent=2, ensure_ascii=False),

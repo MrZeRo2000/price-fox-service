@@ -83,7 +83,7 @@ class GeminiUrlParseStrategy:
         if not filtered or filtered.count(".") > 1:
             return None
         try:
-            value = float(filtered)
+            value = round(float(filtered), 2)
         except ValueError:
             return None
         if value <= 0 or value > 1_000_000:
