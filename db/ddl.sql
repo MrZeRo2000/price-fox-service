@@ -85,3 +85,8 @@ CREATE INDEX idx_scrape_detailed_session_date
 
 CREATE INDEX idx_strategy_domains_domain
                 ON strategy_domains (domain);
+
+CREATE TABLE "versions" (
+                            config_version INTEGER NOT NULL,
+                            scrape_version INTEGER NOT NULL
+                        );
