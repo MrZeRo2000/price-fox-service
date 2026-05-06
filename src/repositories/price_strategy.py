@@ -1,22 +1,19 @@
-import os
-import sqlite3
 from urllib.parse import urlparse
 
+from .sqlite_base_repository import BaseSqliteRepository
 
-class PriceStrategyRepository:
+
+class PriceStrategyRepository(BaseSqliteRepository):
     """Repository for domain-to-price-strategy configuration."""
 
     def __init__(self, db_path: str):
-        if not os.path.exists(db_path):
-            raise ValueError(f"Product catalog db path {db_path} does not exist")
-        self._db_path = db_path
-
-    @property
-    def db_path(self) -> str:
-        return self._db_path
+        super().__init__(
+            db_path,
+            missing_db_message=f"Product catalog db path {db_path} does not exist",
+        )
 
     def ensure_schema(self) -> None:
-        with sqlite3.connect(self._db_path) as connection:
+        with self._connect() as connection:
             connection.executemany(
                 "INSERT OR IGNORE INTO strategies (strategy_name) VALUES (?)",
                 [("gemini_url",), ("playwright",), ("jina",)],
@@ -47,7 +44,7 @@ class PriceStrategyRepository:
 
     def load_domain_strategy_overrides(self) -> dict[str, str]:
         self.ensure_schema()
-        with sqlite3.connect(self._db_path) as connection:
+        with self._connect() as connection:
             rows = connection.execute(
                 """
                 SELECT sd.domain, s.strategy_name
@@ -77,7 +74,7 @@ class PriceStrategyRepository:
 
     def load_settings(self) -> dict[str, str]:
         self.ensure_schema()
-        with sqlite3.connect(self._db_path) as connection:
+        with self._connect() as connection:
             rows = connection.execute(
                 """
                 SELECT setting_key, setting_value

@@ -1,20 +1,10 @@
-import os
-import sqlite3
+from .sqlite_base_repository import BaseSqliteRepository
 
 
-class VersionsRepository:
+class VersionsRepository(BaseSqliteRepository):
     """Repository responsible for updates in the versions table."""
 
     TABLE_NAME = "versions"
-
-    def __init__(self, db_path: str):
-        if not os.path.exists(db_path):
-            raise ValueError(f"SQLite database path {db_path} does not exist")
-        self._db_path = db_path
-
-    @property
-    def db_path(self) -> str:
-        return self._db_path
 
     def touch_scrape_version(self) -> dict:
         """
@@ -22,7 +12,7 @@ class VersionsRepository:
 
         The table is expected to contain exactly one row and is updated in-place.
         """
-        with sqlite3.connect(self._db_path) as connection:
+        with self._connect() as connection:
             updated_rows = connection.execute(
                 f"UPDATE {self.TABLE_NAME} SET scrape_version = unixepoch()"
             ).rowcount

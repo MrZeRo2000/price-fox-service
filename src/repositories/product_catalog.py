@@ -1,23 +1,20 @@
-import os
 import sqlite3
 
 from models import CatalogData
+from .sqlite_base_repository import BaseSqliteRepository
 
 
-class ProductCatalogRepository:
+class ProductCatalogRepository(BaseSqliteRepository):
     """Repository responsible for all product-catalog DB communication."""
 
     def __init__(self, db_path: str):
-        if not os.path.exists(db_path):
-            raise ValueError(f"Product catalog db path {db_path} does not exist")
-        self._db_path = db_path
-
-    @property
-    def db_path(self) -> str:
-        return self._db_path
+        super().__init__(
+            db_path,
+            missing_db_message=f"Product catalog db path {db_path} does not exist",
+        )
 
     def load_catalog_data(self) -> CatalogData:
-        with sqlite3.connect(self._db_path) as connection:
+        with self._connect() as connection:
             urls = self._fetch_urls(connection)
             categories = self._fetch_categories(connection)
             category_ids_by_product = self._fetch_category_ids_by_product(connection)
