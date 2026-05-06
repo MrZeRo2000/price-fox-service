@@ -5,7 +5,7 @@ from processor import (
     ScrapeConsolidatedProcessor,
     ScrapeStatsProcessor,
 )
-from repositories import ScrapeDetailedRepository
+from repositories import ScrapeDetailedRepository, VersionsRepository
 
 
 def persist_latest_scrape_results(catalog_config: CatalogConfig) -> dict:
@@ -60,6 +60,8 @@ def persist_latest_scrape_results(catalog_config: CatalogConfig) -> dict:
         db_path=catalog_config.product_catalog_db_path
     )
     stats_results = scrape_stats_processor.refresh()
+    versions_repository = VersionsRepository(db_path=catalog_config.product_catalog_db_path)
+    version_update_result = versions_repository.touch_scrape_version()
     logger.info(
         f"Persisted scrape session_date={persisted_results['session_date']} "
         f"(deleted={persisted_results['deleted_rows']}, saved={persisted_results['saved_rows']}, "
@@ -79,6 +81,11 @@ def persist_latest_scrape_results(catalog_config: CatalogConfig) -> dict:
         f"Refreshed scrape_stats (deleted={stats_results['deleted_rows']}, "
         f"saved={stats_results['saved_rows']})."
     )
+    logger.info(
+        "Updated versions scrape_version "
+        f"(updated_rows={version_update_result['updated_rows']}, "
+        f"row_count={version_update_result['row_count']})."
+    )
     return {
         "session_date": persisted_results["session_date"],
         "deleted_rows": persisted_results["deleted_rows"],
@@ -89,4 +96,5 @@ def persist_latest_scrape_results(catalog_config: CatalogConfig) -> dict:
         "consolidated": consolidated_results,
         "analysis": analysis_results,
         "stats": stats_results,
+        "versions": version_update_result,
     }
