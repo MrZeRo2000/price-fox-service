@@ -1,10 +1,10 @@
 import pytest
 import os
 
-from cfg import Configuration
+from cfg import CatalogConfig
 
 def test_configuration():
-    configuration = Configuration()
+    configuration = CatalogConfig()
 
     assert configuration.product_catalog_data is not None
     assert len(configuration.product_catalog_data.categories) > 0

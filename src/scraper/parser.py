@@ -160,35 +160,34 @@ class Parser:
         return best_strategy
 
     def _extract_price_with_default_pipeline(self, source: TextSources) -> dict:
-        try:
-            extracted = self._extract_price_with_hf(source.text)
-        except Exception as exc:
-            extracted = {
-                "status": "failed",
-                "price": None,
-                "currency": None,
-                "raw_price_text": None,
-                "price_type": "other",
-                "evidence_text": None,
-                "confidence": 0,
-                "provider": "huggingface-local",
-                "error": f"Local Hugging Face parse failed: {exc}",
-            }
+        html_candidate = self._extract_from_html_attributes(source.html_path)
+        text_candidate = self._extract_from_text_candidates(source.text)
+        if html_candidate is not None and text_candidate is not None:
+            fallback = (
+                text_candidate
+                if text_candidate["confidence"] - html_candidate["confidence"] > 0.2
+                else html_candidate
+            )
+        else:
+            fallback = html_candidate or text_candidate
 
-        if extracted.get("price") is None or extracted.get("price_type") != "product":
-            html_candidate = self._extract_from_html_attributes(source.html_path)
-            text_candidate = self._extract_from_text_candidates(source.text)
-            if html_candidate is not None and text_candidate is not None:
-                fallback = (
-                    text_candidate
-                    if text_candidate["confidence"] - html_candidate["confidence"] > 0.2
-                    else html_candidate
-                )
-            else:
-                fallback = html_candidate or text_candidate
-
-            if fallback is not None and fallback.get("price_type") == "product":
-                extracted = fallback
+        if fallback is not None and fallback.get("price_type") == "product":
+            extracted = fallback
+        else:
+            try:
+                extracted = self._extract_price_with_hf(source.text)
+            except Exception as exc:
+                extracted = {
+                    "status": "failed",
+                    "price": None,
+                    "currency": None,
+                    "raw_price_text": None,
+                    "price_type": "other",
+                    "evidence_text": None,
+                    "confidence": 0,
+                    "provider": "huggingface-local",
+                    "error": f"Local Hugging Face parse failed: {exc}",
+                }
 
         return extracted
 
@@ -601,6 +600,9 @@ class Parser:
 
         for selector in selectors:
             for node in soup.select(selector):
+                if len([v for v in node.parent.attrs.keys() if 'old' in v.lower()]) > 0:
+                    continue
+
                 raw = (
                     " ".join(
                         [node.get(key, "") for key in attribute_keys if node.get(key, "")]

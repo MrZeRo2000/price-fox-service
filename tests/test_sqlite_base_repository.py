@@ -10,12 +10,12 @@ class _DummyRepository(BaseSqliteRepository):
 
 
 def test_sqlite_base_repository_raises_for_missing_db_file(tmp_path: Path) -> None:
-    missing_path = tmp_path / "missing.sqlite"
+    missing_path = str(tmp_path / "missing.sqlite")
 
     with pytest.raises(
-        ValueError, match=f"SQLite database path {missing_path} does not exist"
+        ValueError, match=r"SQLite database path ([A-Za-z]:\\[\w\\.\-]+)missing.sqlite does not exist"
     ):
-        _DummyRepository(str(missing_path))
+        _DummyRepository(missing_path)
 
 
 def test_sqlite_base_repository_supports_custom_error_message(tmp_path: Path) -> None:
