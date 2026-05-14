@@ -58,6 +58,12 @@ Push local DB to Turso as a one-off initial load:
 python src/turso_initial_load.py
 ```
 
+One-time fetch + parse for a single ad-hoc URL (artifacts and parsed JSON land in `data/one-time/`):
+
+```bash
+python src/one_time_url.py "https://example.com/product"
+```
+
 ## CLI Options (`src/main.py`)
 
 - `--data-path <path>`
@@ -75,6 +81,17 @@ python src/turso_initial_load.py
 - `--sync`
   - enables Turso pre/post sync for DB-backed runs.
   - if local DB is missing, performs bootstrap pull from Turso first.
+
+## CLI Options (`src/one_time_url.py`)
+
+- positional `url`
+  - URL to fetch and parse through the full pipeline.
+- `--db-path <path>`
+  - overrides product catalog SQLite DB path used to load strategy settings.
+- `--quiet`
+  - suppresses stdout JSON output (the result file is still written).
+
+Output layout: `data/one-time/scrape/<timestamp>/1/1/page.html`, `page.txt`, `metadata.json`, `parsed.json`, plus a combined `data/one-time/scrape/<timestamp>/parsed_output.json`.
 
 ## CLI Options (`src/turso_initial_load.py`)
 
