@@ -20,16 +20,14 @@ def test_parser(config: CatalogConfig):
     parser.execute()
 
 
-@pytest.fixture
-def parser() -> Parser:
-    config = CatalogConfig(
-        config_path=str(Path(__file__).parent.parent / "config" / "test-product-catalog.json")
-    )
-    return Parser(config)
-
-
-def test_parse_watsons_palmolive_old_new_price(parser: Parser):
-    html_path = Path(__file__).parent / "data" / "page_watsons_palmolive_old_new.html"
+def test_parse_watsons_palmolive_old_new_price(config: CatalogConfig):
+    parser = Parser(config)
+    html_path = Path(__file__).parent / "data" / "page_watsons_palmolive_old_new" / "page.html"
     result = parser.parse_file(html_path)
     assert result["price"] == 31.99
 
+def test_parse_page_epicentr_ariel_old_new_price(config: CatalogConfig):
+    parser = Parser(config)
+    html_path = Path(__file__).parent / "data" / "page_epicentr_ariel_old_new"  / "page.html"
+    result = parser.parse_file(html_path)
+    assert result["price"] == 329

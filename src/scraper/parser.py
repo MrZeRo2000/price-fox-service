@@ -9,7 +9,7 @@ from urllib.parse import urlparse
 from bs4 import BeautifulSoup
 from huggingface_hub import snapshot_download
 from repositories import PriceStrategyRepository
-from transformers import pipeline
+from transformers import pipeline, AutoModelForCausalLM, AutoTokenizer
 
 from cfg import CatalogConfig
 from scraper.parse_strategies import GeminiUrlParseStrategy
@@ -201,16 +201,25 @@ class Parser:
             )
             return
 
-        tasks = ("text2text-generation", "text-generation")
+        tasks = ["text-generation"]
         last_error = None
+
+        tokenizer = AutoTokenizer.from_pretrained(
+            self.model_id,
+            local_files_only=True,
+        )
+
+        model = AutoModelForCausalLM.from_pretrained(
+            self.model_id,
+            local_files_only=True,
+        )
 
         for task in tasks:
             try:
                 self.generator = pipeline(
                     task=task,
-                    model=self.model_id,
-                    tokenizer=self.model_id,
-                    local_files_only=True,
+                    model=model,
+                    tokenizer=tokenizer,
                 )
                 self.generator_task = task
                 self._generator_init_error = None
