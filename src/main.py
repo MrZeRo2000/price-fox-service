@@ -8,6 +8,7 @@ from application import persist_latest_scrape_results, run_pipeline
 from logger import create_application_logger
 from cfg import CatalogConfig
 from config.settings import resolve_configuration_settings
+from repositories import ScrapeStatsRepository
 from turso_sync import (
     TursoSyncClient,
     bootstrap_turso_pull_if_missing,
@@ -40,6 +41,7 @@ def _log_resolved_configuration(
             "collect_only": args.collect_only,
             "print_json": args.print_json,
             "sync": args.sync,
+            "once_per_day": args.once_per_day,
             "turso_attempt_db_sync": turso_attempt_db_sync,
             "catalog_source": catalog_source,
         },
@@ -90,6 +92,14 @@ def _build_parser() -> argparse.ArgumentParser:
             "and auth_token, pull before the run and push after are mandatory even without this flag."
         ),
     )
+    parser.add_argument(
+        "--once_per_day",
+        action="store_true",
+        help=(
+            "After pulling from Turso, exit early if scrape_detailed already has rows for "
+            "today's session_date."
+        ),
+    )
     return parser
 
 
@@ -137,6 +147,22 @@ def main() -> int:
                     turso_config=turso_config,
                     logger=logger,
                 )
+
+        if args.once_per_day:
+            db_path = resolved_settings.product_catalog_db_path
+            if not use_sqlite_catalog or db_path is None or not Path(db_path).exists():
+                logger.info(
+                    "--once_per_day check skipped: no SQLite product catalog DB available."
+                )
+            else:
+                today_session_date = int(session_start_datetime.strftime("%Y%m%d"))
+                scrape_stats_repository = ScrapeStatsRepository(db_path=db_path)
+                if scrape_stats_repository.has_rows_for_session_date(today_session_date):
+                    logger.info(
+                        f"--once_per_day: scrape_stats already has rows for "
+                        f"session_date={today_session_date}; skipping run."
+                    )
+                    return 0
 
         catalog_config = CatalogConfig(
             data_path=args.data_path,

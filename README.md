@@ -81,6 +81,10 @@ python src/one_time_url.py "https://example.com/product"
 - `--sync`
   - enables Turso pre/post sync for DB-backed runs.
   - if local DB is missing, performs bootstrap pull from Turso first.
+- `--once_per_day`
+  - after the Turso pull, checks `scrape_stats` for a row with today's `session_date` (YYYYMMDD).
+  - if such a row exists, the run is treated as already completed for the day and exits early with code 0 before fetch/parse/persist.
+  - skipped (with a log line) when the SQLite catalog is not in use (`--config-path` set) or the DB file is missing.
 
 ## CLI Options (`src/one_time_url.py`)
 

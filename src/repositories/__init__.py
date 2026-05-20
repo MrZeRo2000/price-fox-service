@@ -2,6 +2,7 @@ from .sqlite_base_repository import BaseSqliteRepository
 from .product_catalog import ProductCatalogRepository
 from .price_strategy import PriceStrategyRepository
 from .scrape_detailed import ScrapeDetailedRepository
+from .scrape_stats import ScrapeStatsRepository
 from .versions import VersionsRepository
 
 __all__ = [
@@ -9,5 +10,6 @@ __all__ = [
     "ProductCatalogRepository",
     "PriceStrategyRepository",
     "ScrapeDetailedRepository",
+    "ScrapeStatsRepository",
     "VersionsRepository",
 ]
