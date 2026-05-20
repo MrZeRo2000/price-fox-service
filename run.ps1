@@ -1,1 +1,1 @@
-Invoke-Expression "$PSScriptRoot/venv/Scripts/python $PSScriptRoot/src/main.py --sync"
+Invoke-Expression "$PSScriptRoot/venv/Scripts/python $PSScriptRoot/src/main.py --sync --once_per_day"
