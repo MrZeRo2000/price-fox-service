@@ -932,7 +932,7 @@ class Fetcher:
             "you don't have permission to access",
             "access denied",
             "error 403",
-            "forbidden",
+            # "forbidden",
             "request blocked",
             "blocked by security policy",
         )
