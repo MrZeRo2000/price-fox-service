@@ -730,6 +730,15 @@ def _push_local_sqlite_to_remote(db_path: str, sync_url: str, auth_token: str) -
         remote_conn.execute("PRAGMA foreign_keys = OFF;")
         _drop_remote_user_objects(remote_conn)
 
+        # iterdump emits tables alphabetically, so child tables (e.g.
+        # product_categories) get INSERTed before their parent (products) is
+        # created. Turso/libsql does not reliably honor `PRAGMA foreign_keys
+        # = OFF` across the Hrana stream, so per-row FK lookups fail with
+        # "no such table: main.products". `defer_foreign_keys` is a
+        # per-transaction PRAGMA that postpones FK checks until COMMIT and is
+        # honored even when `foreign_keys` is ON.
+        remote_conn.execute("BEGIN;")
+        remote_conn.execute("PRAGMA defer_foreign_keys = ON;")
         for statement in local_conn.iterdump():
             sql = statement.strip()
             if (
@@ -741,8 +750,7 @@ def _push_local_sqlite_to_remote(db_path: str, sync_url: str, auth_token: str) -
                 continue
             remote_conn.execute(sql)
             statements_run += 1
-
-        remote_conn.commit()
+        remote_conn.execute("COMMIT;")
     except Exception as exc:
         elapsed_ms = int((time.monotonic() - started) * 1000)
         logger.error(

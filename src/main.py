@@ -93,7 +93,7 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
-        "--once_per_day",
+        "--once-per-day",
         action="store_true",
         help=(
             "After pulling from Turso, exit early if scrape_detailed already has rows for "
