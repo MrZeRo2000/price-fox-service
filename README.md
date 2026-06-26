@@ -7,7 +7,7 @@ Price Fox Service fetches product pages, parses prices, and persists daily scrap
 - `src/main.py` is the CLI entrypoint.
 - `src/application/run_pipeline.py` orchestrates fetch -> parse -> persist flows.
 - `src/scraper/fetcher.py` is the fetch orchestrator (job preparation, strategy selection, output placement).
-- `src/scraper/parser.py` reads fetched `page.html`/`page.txt` and extracts normalized prices.
+- `src/scraper/parser.py` reads fetched `page.html`/`page.txt` and extracts normalized prices. Out-of-stock pages are detected up front (schema.org `availability` and "Нет в наличии"/"Немає в наявності"/"Out of stock"-style badges in the upper part of the page) and reported as a failed parse (`status: "failed"`, `out_of_stock: true`, no price) instead of yielding a bogus price.
 - `src/application/persist_latest_session.py` writes parsed outputs into storage.
 - `src/turso_sync.py` handles Turso pull/push synchronization for the local SQLite catalog DB.
 

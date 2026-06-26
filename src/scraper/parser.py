@@ -160,6 +160,14 @@ class Parser:
         return best_strategy
 
     def _extract_price_with_default_pipeline(self, source: TextSources) -> dict:
+        out_of_stock_evidence = self._detect_out_of_stock(source)
+        if out_of_stock_evidence is not None:
+            self.logger.info(
+                "Product detected as out of stock; skipping price extraction "
+                f"(no heuristic or LLM parse). Evidence: {out_of_stock_evidence}"
+            )
+            return self._build_out_of_stock_result(out_of_stock_evidence)
+
         html_candidate = self._extract_from_html_attributes(source.html_path)
         text_candidate = self._extract_from_text_candidates(source.text)
         if html_candidate is not None and text_candidate is not None:
@@ -172,8 +180,17 @@ class Parser:
             fallback = html_candidate or text_candidate
 
         if fallback is not None and fallback.get("price_type") == "product":
+            self.logger.info(
+                "Product price resolved via heuristics "
+                f"(provider={fallback.get('provider')}, "
+                f"confidence={fallback.get('confidence')}); skipping local LLM parse."
+            )
             extracted = fallback
         else:
+            self.logger.info(
+                "Heuristics did not yield a product price; "
+                "starting local LLM (HuggingFace) parse."
+            )
             try:
                 extracted = self._extract_price_with_hf(source.text)
             except Exception as exc:
@@ -430,6 +447,148 @@ class Parser:
             "sale price",
             "current price",
         )
+
+    @staticmethod
+    def _out_of_stock_markers() -> tuple[str, ...]:
+        # Phrases shown near the top of a product page when it cannot be bought.
+        return (
+            # Russian
+            "нет в наличии",
+            "нет на складе",
+            "нет в продаже",
+            "товар закончился",
+            "товар отсутствует",
+            "распродано",
+            "снято с продажи",
+            "временно отсутствует",
+            # Ukrainian
+            "немає в наявності",
+            "немає у наявності",
+            "немає на складі",
+            "немає в продажу",
+            "товар закінчився",
+            "товар відсутній",
+            "розпродано",
+            "знято з продажу",
+            "тимчасово відсутній",
+            "відсутній у продажу",
+            "відсутня у продажу",
+            # English
+            "out of stock",
+            "sold out",
+            "currently unavailable",
+            "temporarily unavailable",
+            "temporarily out of stock",
+            "no longer available",
+        )
+
+    @staticmethod
+    def _schema_out_of_stock_markers() -> tuple[str, ...]:
+        # schema.org ItemAvailability values that mean "not buyable".
+        return (
+            "outofstock",
+            "soldout",
+            "discontinued",
+            "instoreonly",
+            "backorder",
+        )
+
+    @staticmethod
+    def _page_top_text(text: str) -> str:
+        """
+        Return the upper portion of the page text where the primary
+        availability badge and buy button live. Bounded so deep sections
+        (per-store availability lists, related products, reviews) are not
+        scanned and cannot trigger false out-of-stock detection.
+        """
+        if not text:
+            return ""
+        length = len(text)
+        window = int(length * 0.5)
+        window = max(2500, min(window, 6000))
+        return text[:window]
+
+    @staticmethod
+    def _detect_out_of_stock_in_html(html_path: Optional[str]) -> Optional[str]:
+        """
+        Inspect schema.org product metadata for a non-buyable availability.
+        Returns the matched availability value as evidence, or None.
+        """
+        if not html_path:
+            return None
+        path = Path(html_path)
+        if not path.exists():
+            return None
+
+        soup = BeautifulSoup(path.read_text(encoding="utf-8", errors="ignore"), "lxml")
+        oos_markers = Parser._schema_out_of_stock_markers()
+        for script in soup.select("script[type='application/ld+json']"):
+            payload = script.string or script.get_text(" ", strip=True)
+            if not payload:
+                continue
+            try:
+                parsed = json.loads(payload)
+            except Exception:
+                continue
+            objects = parsed if isinstance(parsed, list) else [parsed]
+            for item in objects:
+                if not isinstance(item, dict):
+                    continue
+                offers = item.get("offers")
+                offers_list = offers if isinstance(offers, list) else [offers]
+                for offer in offers_list:
+                    if not isinstance(offer, dict):
+                        continue
+                    availability = offer.get("availability")
+                    if not isinstance(availability, str):
+                        continue
+                    normalized = availability.rsplit("/", 1)[-1].strip().lower()
+                    normalized = normalized.replace("-", "").replace("_", "")
+                    if normalized in oos_markers:
+                        return f"schema.org availability: {availability}"
+        return None
+
+    @staticmethod
+    def _detect_out_of_stock(source: "TextSources") -> Optional[str]:
+        """
+        Detect that a product is not available for purchase.
+
+        Returns a short evidence string when out of stock, otherwise None.
+        Checks structured schema.org metadata first, then the visible text in
+        the upper part of the page (where the availability badge is shown).
+        """
+        schema_evidence = Parser._detect_out_of_stock_in_html(source.html_path)
+        if schema_evidence is not None:
+            return schema_evidence
+
+        top_text = Parser._page_top_text(source.text)
+        if not top_text:
+            return None
+        lower = top_text.lower()
+        for marker in Parser._out_of_stock_markers():
+            position = lower.find(marker)
+            if position == -1:
+                continue
+            left = max(0, position - 40)
+            right = min(len(top_text), position + len(marker) + 40)
+            context = top_text[left:right].replace("\n", " ").strip()
+            return context
+        return None
+
+    @staticmethod
+    def _build_out_of_stock_result(evidence: str) -> dict:
+        return {
+            "status": "failed",
+            "price": None,
+            "currency": None,
+            "raw_price_text": None,
+            "price_type": "other",
+            "evidence_text": evidence[:300] if evidence else None,
+            "confidence": 0,
+            "provider": "availability-check",
+            "out_of_stock": True,
+            "error": "Product is out of stock",
+        }
 
     @staticmethod
     def _context_price_type(text: str) -> str:
@@ -806,6 +965,10 @@ class Parser:
 
     def _extract_price_with_hf(self, text: str) -> dict:
         if self.generator is None:
+            self.logger.warning(
+                "Local LLM parse skipped: generator is not initialized "
+                f"({self._generator_init_error})."
+            )
             return {
                 "status": "failed",
                 "price": None,
@@ -821,6 +984,11 @@ class Parser:
         snippets = self._price_focused_snippets(text)
         chunks = self._chunk_text(text, chunk_size=24000, overlap=2000)
         candidates = snippets + chunks[:6]
+
+        self.logger.info(
+            f"Local LLM ({self.model_id}) parse started over "
+            f"{len(candidates)} candidate text segment(s)."
+        )
 
         if not candidates:
             return {
@@ -919,10 +1087,60 @@ class Parser:
             f"({url if url is not None else 'unknown'}): {selected_strategy}"
         )
         source = self._read_text_sources(url_folder)
+
+        out_of_stock_evidence = self._detect_out_of_stock(source)
+        if out_of_stock_evidence is not None:
+            self.logger.info(
+                f"Product url_id={url_id} detected as out of stock; "
+                "marking parse as failed (no heuristic or LLM parse). "
+                f"Evidence: {out_of_stock_evidence}"
+            )
+            extracted = self._build_out_of_stock_result(out_of_stock_evidence)
+            parse_finished_at_dt = datetime.utcnow()
+            parse_finished_at = parse_finished_at_dt.isoformat()
+            parse_duration_seconds = (
+                parse_finished_at_dt - parse_started_at_dt
+            ).total_seconds()
+            result = {
+                "status": extracted["status"],
+                "product_id": product_id,
+                "url_id": url_id,
+                "url": url,
+                "price": extracted["price"],
+                "currency": extracted["currency"],
+                "raw_price_text": extracted["raw_price_text"],
+                "price_type": extracted["price_type"],
+                "evidence_text": extracted["evidence_text"],
+                "confidence": extracted["confidence"],
+                "provider": extracted["provider"],
+                "out_of_stock": True,
+                "error": extracted["error"],
+                "model_id": self.model_id,
+                "parse_started_at": parse_started_at,
+                "parse_finished_at": parse_finished_at,
+                "parse_duration_seconds": parse_duration_seconds,
+                "parsed_at": parse_finished_at,
+                "html_path": source.html_path,
+                "txt_path": source.txt_path,
+            }
+            (url_folder / "parsed.json").write_text(
+                json.dumps(result, indent=2, ensure_ascii=False),
+                encoding="utf-8",
+            )
+            return result
+
         if not source.text:
             if selected_strategy == "gemini_url":
+                self.logger.info(
+                    f"No local content for url_id={url_id}; "
+                    "starting Gemini-URL LLM parse."
+                )
                 gemini_candidate = self._gemini_url_strategy.extract_price_from_url(url)
             else:
+                self.logger.info(
+                    f"No local content for url_id={url_id} and strategy is "
+                    f"'{selected_strategy}'; skipping LLM parse."
+                )
                 gemini_candidate = None
             if gemini_candidate is not None and gemini_candidate.get("status") == "success":
                 parse_finished_at_dt = datetime.utcnow()
@@ -998,6 +1216,9 @@ class Parser:
             return result
 
         if selected_strategy == "gemini_url":
+            self.logger.info(
+                f"Starting Gemini-URL LLM parse for url_id={url_id}."
+            )
             extracted = self._gemini_url_strategy.extract_price_from_url(url)
         else:
             extracted = self._extract_price_with_default_pipeline(source)
