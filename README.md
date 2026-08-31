@@ -27,11 +27,6 @@ whole pipeline run:
   copy from Turso.
 - On close, the WAL is checkpointed into the main DB file and both `product-catalog.sqlite`
   and `product-catalog.sqlite-info` are copied into `db/database/backups/<yyyy_mm_dd>/`.
-- If a long fetch/parse phase runs between opening the connection and its first write,
-  Turso's remote Hrana stream can go stale in the meantime and the write fails with a
-  "stream not found" error. `TursoReplicaConnection` catches that specific error,
-  reconnects, and retries the failed call once automatically -- this is invisible to
-  the rest of the pipeline.
 
 Whether this is active is controlled by `config/turso.json`'s `enabled` field. When
 disabled, the same connection type is used against the local file only (no sync_url),

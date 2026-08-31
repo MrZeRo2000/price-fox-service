@@ -172,18 +172,6 @@ def _backup_replica_files(db_path: str, *, logger: logging.Logger) -> None:
     _prune_old_backups(backups_root, BACKUP_RETENTION_COUNT)
 
 
-_STALE_STREAM_MARKERS = ("stream not found", "stream_expired", "stream expired")
-
-
-def _is_stale_stream_error(exc: Exception) -> bool:
-    """True for Hrana errors meaning the replica's remote write stream has
-    gone away (e.g. it sat idle through a long fetch/parse phase before its
-    first write and Turso recycled it server-side). Reconnecting gets a
-    fresh stream; the failed call is then safe to retry once."""
-    message = str(exc).lower()
-    return any(marker in message for marker in _STALE_STREAM_MARKERS)
-
-
 def _connect_libsql(db_path: str, sync_url: str, auth_token: str):
     try:
         import libsql  # type: ignore
@@ -204,24 +192,12 @@ def _connect_libsql(db_path: str, sync_url: str, auth_token: str):
         ) from exc
 
 
-def _connect_local(db_path: str):
-    import libsql  # type: ignore
-
-    return libsql.connect(db_path)
-
-
 class TursoReplicaConnection:
     """Owns the single DB connection used for a whole pipeline run.
 
     Use as a context manager: opening pulls remote changes (or bootstraps a
     fresh full replica when the local state is missing/incomplete); closing
     checkpoints the WAL and backs up both DB files.
-
-    ``connection`` returns this object itself: repositories call ``execute``/
-    ``executemany`` on it exactly like a raw DB-API connection, but a call
-    that fails because the remote Hrana stream went stale (idle too long
-    between opening the connection and its first write) transparently
-    reconnects and retries once instead of failing the whole run.
     """
 
     def __init__(
@@ -233,29 +209,11 @@ class TursoReplicaConnection:
         self._db_path = db_path
         self._config = config
         self._logger = logger or _module_logger
-        self._raw_connection = None
+        self._connection = None
 
     @property
-    def connection(self) -> "TursoReplicaConnection":
-        return self
-
-    def execute(self, *args, **kwargs):
-        return self._with_stale_stream_retry(lambda conn: conn.execute(*args, **kwargs))
-
-    def executemany(self, *args, **kwargs):
-        return self._with_stale_stream_retry(lambda conn: conn.executemany(*args, **kwargs))
-
-    def _with_stale_stream_retry(self, call):
-        try:
-            return call(self._raw_connection)
-        except Exception as exc:
-            if not _is_stale_stream_error(exc):
-                raise
-            self._logger.warning(
-                "Turso remote stream went stale (%s); reconnecting and retrying once.", exc
-            )
-            self._reconnect()
-            return call(self._raw_connection)
+    def connection(self):
+        return self._connection
 
     def open(self) -> "TursoReplicaConnection":
         os.makedirs(os.path.dirname(self._db_path), exist_ok=True)
@@ -267,7 +225,9 @@ class TursoReplicaConnection:
             )
             if not os.path.exists(self._db_path):
                 raise ValueError(f"SQLite database path {self._db_path} does not exist")
-            self._raw_connection = _connect_local(self._db_path)
+            import libsql  # type: ignore
+
+            self._connection = libsql.connect(self._db_path)
             return self
 
         if not self._config.is_ready:
@@ -289,39 +249,27 @@ class TursoReplicaConnection:
             )
             _remove_replica_files(self._db_path, logger=self._logger)
 
-        self._raw_connection = self._connect_and_sync()
-        return self
-
-    def _reconnect(self) -> None:
-        if self._raw_connection is not None:
-            try:
-                self._raw_connection.close()
-            except Exception as exc:
-                self._logger.debug("Ignoring error while closing stale connection: %s", exc)
-        self._raw_connection = (
-            self._connect_and_sync() if self._config.enabled else _connect_local(self._db_path)
-        )
-
-    def _connect_and_sync(self):
         self._logger.info("Syncing with Turso remote %s ...", describe_sync_url_for_logs(self._config.url))
         started = time.monotonic()
-        connection = _connect_libsql(self._db_path, self._config.url, self._config.auth_token)
-        connection.sync()
+        self._connection = _connect_libsql(
+            self._db_path, self._config.url, self._config.auth_token
+        )
+        self._connection.sync()
         self._logger.info(
             "Turso sync completed in %sms.",
             int((time.monotonic() - started) * 1000),
         )
-        return connection
+        return self
 
     def close(self) -> None:
-        if self._raw_connection is None:
+        if self._connection is None:
             return
         self._logger.info("Closing product catalog DB connection '%s'.", self._db_path)
         try:
-            self._raw_connection.close()
+            self._connection.close()
         except Exception as exc:
             self._logger.debug("Ignoring error while closing replica connection: %s", exc)
-        self._raw_connection = None
+        self._connection = None
         flush_sqlite_to_disk(self._db_path, logger=self._logger)
         _backup_replica_files(self._db_path, logger=self._logger)
 
