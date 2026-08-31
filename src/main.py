@@ -1,4 +1,5 @@
 import argparse
+import contextlib
 import json
 import sys
 from datetime import datetime
@@ -9,20 +10,19 @@ from logger import create_application_logger
 from cfg import CatalogConfig
 from config.settings import resolve_configuration_settings
 from repositories import ScrapeStatsRepository
-from turso_sync import (
-    TursoSyncClient,
-    bootstrap_turso_pull_if_missing,
-    load_turso_sync_configuration,
-    run_turso_post_sync_push,
-    run_turso_pre_sync_pull,
-)
+from turso_sync import TursoReplicaConnection, load_turso_sync_configuration
 from version import APP_VERSION
+
+
+class _NoOpReplica:
+    connection = None
+
 
 def _log_resolved_configuration(
     logger,
     catalog_config: CatalogConfig,
     args: argparse.Namespace,
-    turso_attempt_db_sync: bool,
+    turso_enabled: bool,
 ) -> None:
     catalog_source = (
         "json_file"
@@ -40,9 +40,8 @@ def _log_resolved_configuration(
             "parse_only": args.parse_only,
             "collect_only": args.collect_only,
             "print_json": args.print_json,
-            "sync": args.sync,
             "once_per_day": args.once_per_day,
-            "turso_attempt_db_sync": turso_attempt_db_sync,
+            "turso_enabled": turso_enabled,
             "catalog_source": catalog_source,
         },
     }
@@ -88,15 +87,15 @@ def _build_parser() -> argparse.ArgumentParser:
         "--sync",
         action="store_true",
         help=(
-            "Request Turso sync with the remote DB. When config/turso.json has enabled, url, "
-            "and auth_token, pull before the run and push after are mandatory even without this flag."
+            "Require Turso to be fully configured (enabled/url/auth_token in turso.json); "
+            "fail instead of silently running against the local DB only."
         ),
     )
     parser.add_argument(
         "--once-per-day",
         action="store_true",
         help=(
-            "After pulling from Turso, exit early if scrape_detailed already has rows for "
+            "After syncing with Turso, exit early if scrape_detailed already has rows for "
             "today's session_date."
         ),
     )
@@ -121,112 +120,79 @@ def main() -> int:
 
     turso_config = load_turso_sync_configuration()
     use_sqlite_catalog = args.config_path is None
-    attempt_db_sync = use_sqlite_catalog and (
-        turso_config.is_ready or args.sync
+
+    if args.sync and use_sqlite_catalog and not turso_config.is_ready:
+        logger.error(
+            f"--sync was passed but Turso is not fully configured in '{turso_config.config_path}'."
+        )
+        return 1
+
+    replica_cm = (
+        TursoReplicaConnection(
+            resolved_settings.product_catalog_db_path, turso_config, logger=logger
+        )
+        if use_sqlite_catalog
+        else contextlib.nullcontext(_NoOpReplica())
     )
 
     try:
-        turso_sync_client = None
+        with replica_cm as replica:
+            if args.once_per_day:
+                if replica.connection is None:
+                    logger.info(
+                        "--once_per_day check skipped: no SQLite product catalog DB available."
+                    )
+                else:
+                    today_session_date = int(session_start_datetime.strftime("%Y%m%d"))
+                    scrape_stats_repository = ScrapeStatsRepository(replica.connection)
+                    if scrape_stats_repository.has_rows_for_session_date(today_session_date):
+                        logger.info(
+                            f"--once_per_day: scrape_stats already has rows for "
+                            f"session_date={today_session_date}; skipping run."
+                        )
+                        return 0
 
-        if attempt_db_sync:
-            db_path = resolved_settings.product_catalog_db_path
-            turso_sync_client = TursoSyncClient(
-                config=turso_config,
-                db_path=db_path,
+            catalog_config = CatalogConfig(
+                data_path=args.data_path,
+                config_path=args.config_path,
+                db_path=args.db_path,
+                db_connection=replica.connection,
             )
-            did_bootstrap_pull = bootstrap_turso_pull_if_missing(
-                turso_sync_client=turso_sync_client,
-                db_path=db_path,
-                turso_config=turso_config,
-                logger=logger,
+            logger = catalog_config.logger
+            _log_resolved_configuration(
+                logger,
+                catalog_config,
+                args,
+                turso_enabled=use_sqlite_catalog and turso_config.enabled,
             )
-            if not did_bootstrap_pull:
-                run_turso_pre_sync_pull(
-                    turso_sync_client=turso_sync_client,
-                    db_path=db_path,
-                    turso_config=turso_config,
-                    logger=logger,
-                )
 
-        if args.once_per_day:
-            db_path = resolved_settings.product_catalog_db_path
-            if not use_sqlite_catalog or db_path is None or not Path(db_path).exists():
-                logger.info(
-                    "--once_per_day check skipped: no SQLite product catalog DB available."
+            if args.collect_only:
+                result = run_pipeline(
+                    catalog_config,
+                    parse_only=args.parse_only,
+                    collect_only=args.collect_only,
                 )
             else:
-                today_session_date = int(session_start_datetime.strftime("%Y%m%d"))
-                scrape_stats_repository = ScrapeStatsRepository(db_path=db_path)
-                if scrape_stats_repository.has_rows_for_session_date(today_session_date):
-                    logger.info(
-                        f"--once_per_day: scrape_stats already has rows for "
-                        f"session_date={today_session_date}; skipping run."
-                    )
-                    return 0
+                result = run_pipeline(catalog_config, parse_only=args.parse_only)
 
-        catalog_config = CatalogConfig(
-            data_path=args.data_path,
-            config_path=args.config_path,
-            db_path=args.db_path,
-        )
-        logger = catalog_config.logger
-        _log_resolved_configuration(
-            logger, catalog_config, args, turso_attempt_db_sync=attempt_db_sync
-        )
+            fetch_results = result.get("fetch_results", [])
+            parse_results = result.get("parse_results", [])
+            successful_parses = sum(1 for item in parse_results if item.get("status") == "success")
 
-        if args.sync and not use_sqlite_catalog:
-            logger.info(
-                "Turso sync was not applied: product catalog is loaded from JSON (--config-path)."
-            )
-        elif turso_config.is_ready and not use_sqlite_catalog:
-            logger.info(
-                "Turso is fully configured, but pull/push apply only when the catalog is loaded "
-                "from SQLite (omit --config-path)."
-            )
-        elif not attempt_db_sync:
-            logger.info(
-                "Turso DB sync is off (set enabled/url/auth_token in turso.json for mandatory "
-                "pull/push with SQLite, or pass --sync to require sync when the config is incomplete)."
-            )
-
-        if args.collect_only:
-            result = run_pipeline(
-                catalog_config,
-                parse_only=args.parse_only,
-                collect_only=args.collect_only,
-            )
-        else:
-            result = run_pipeline(catalog_config, parse_only=args.parse_only)
-
+            if args.collect_only:
+                logger.info("Collect-only run completed.")
+            elif args.parse_only:
+                logger.info("Parse-only run completed.")
+            else:
+                logger.info("Scraper run completed.")
+            logger.info(f"Fetched records: {len(fetch_results)}")
+            logger.info(f"Parsed records: {len(parse_results)}")
+            logger.info(f"Successful parses: {successful_parses}")
+            if not args.collect_only:
+                persist_latest_scrape_results(catalog_config)
     except Exception as exc:
         logger.error(f"Scraper failed: {exc}")
         return 1
-
-    fetch_results = result.get("fetch_results", [])
-    parse_results = result.get("parse_results", [])
-    successful_parses = sum(1 for item in parse_results if item.get("status") == "success")
-
-    if args.collect_only:
-        logger.info("Collect-only run completed.")
-    elif args.parse_only:
-        logger.info("Parse-only run completed.")
-    else:
-        logger.info("Scraper run completed.")
-    logger.info(f"Fetched records: {len(fetch_results)}")
-    logger.info(f"Parsed records: {len(parse_results)}")
-    logger.info(f"Successful parses: {successful_parses}")
-    if not args.collect_only:
-        persist_latest_scrape_results(catalog_config)
-    if attempt_db_sync and turso_sync_client is not None:
-        try:
-            run_turso_post_sync_push(
-                turso_sync_client=turso_sync_client,
-                turso_config=turso_config,
-                logger=logger,
-            )
-        except Exception as exc:
-            logger.error(f"Turso push failed: {exc}")
-            return 1
 
     session_root = None
     if fetch_results:

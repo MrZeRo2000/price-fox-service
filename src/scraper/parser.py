@@ -105,15 +105,15 @@ class Parser:
         return self._load_site_price_strategy_overrides_from_database()
 
     def _load_site_price_strategy_overrides_from_database(self) -> dict[str, str]:
-        db_path = self.catalog_config.product_catalog_db_path
-        if not db_path:
+        connection = self.catalog_config.db_connection
+        if connection is None:
             return {}
         try:
-            repository = PriceStrategyRepository(db_path)
+            repository = PriceStrategyRepository(connection)
             raw_mapping = repository.load_domain_strategy_overrides()
         except Exception as exc:
             self.logger.warning(
-                f"Unable to load strategy domains from DB '{db_path}': {exc}"
+                f"Unable to load strategy domains from DB: {exc}"
             )
             return {}
 
@@ -126,15 +126,15 @@ class Parser:
         return normalized
 
     def _load_strategy_settings_from_database(self) -> dict[str, str]:
-        db_path = self.catalog_config.product_catalog_db_path
-        if not db_path:
+        connection = self.catalog_config.db_connection
+        if connection is None:
             return {}
         try:
-            repository = PriceStrategyRepository(db_path)
+            repository = PriceStrategyRepository(connection)
             return repository.load_settings()
         except Exception as exc:
             self.logger.warning(
-                f"Unable to load strategy settings from DB '{db_path}': {exc}"
+                f"Unable to load strategy settings from DB: {exc}"
             )
             return {}
 

@@ -12,13 +12,13 @@ class VersionsRepository(BaseSqliteRepository):
 
         The table is expected to contain exactly one row and is updated in-place.
         """
-        with self._connect() as connection:
-            updated_rows = connection.execute(
-                f"UPDATE {self.TABLE_NAME} SET scrape_version = unixepoch()"
-            ).rowcount
-            row_count = connection.execute(
-                f"SELECT COUNT(*) FROM {self.TABLE_NAME}"
-            ).fetchone()[0]
+        connection = self._connection
+        updated_rows = connection.execute(
+            f"UPDATE {self.TABLE_NAME} SET scrape_version = unixepoch()"
+        ).rowcount
+        row_count = connection.execute(
+            f"SELECT COUNT(*) FROM {self.TABLE_NAME}"
+        ).fetchone()[0]
 
         if row_count != 1:
             raise RuntimeError(

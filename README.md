@@ -9,16 +9,29 @@ Price Fox Service fetches product pages, parses prices, and persists daily scrap
 - `src/scraper/fetcher.py` is the fetch orchestrator (job preparation, strategy selection, output placement).
 - `src/scraper/parser.py` reads fetched `page.html`/`page.txt` and extracts normalized prices. Out-of-stock pages are detected up front (schema.org `availability` and "Нет в наличии"/"Немає в наявності"/"Out of stock"-style badges in the upper part of the page) and reported as a failed parse (`status: "failed"`, `out_of_stock: true`, no price) instead of yielding a bogus price.
 - `src/application/persist_latest_session.py` writes parsed outputs into storage.
-- `src/turso_sync.py` handles Turso pull/push synchronization for the local SQLite catalog DB.
+- `src/turso_sync.py` owns the shared libSQL connection (local-only or Turso embedded replica) for the catalog DB.
 
 ## Turso Sync Integration
 
-Turso integration uses the current Python `libsql` approach for embedded replicas:
+`src/turso_sync.py`'s `TursoReplicaConnection` opens a single libSQL embedded-replica
+connection (`libsql.connect(<local_db_path>, sync_url=..., auth_token=...)`) for the
+whole pipeline run:
 
-- connect/sync through `libsql.connect(<local_db_path>, sync_url=..., auth_token=...)`
-- sync is enabled at runtime with `--sync` and values from `config/turso.json`
+- Opening it calls `.sync()`, pulling any remote changes made since the last run.
+- Every repository/processor in the pipeline reads and writes through that same
+  connection for the rest of the run. Writes are forwarded to the remote transparently
+  as they happen -- there is no separate "push" step.
+- If the local `product-catalog.sqlite` / `product-catalog.sqlite-info` pair is
+  missing or incomplete (first run, or a corrupted local replica), the local replica
+  files are removed and the same `connect()` + `.sync()` call bootstraps a fresh full
+  copy from Turso.
+- On close, the WAL is checkpointed into the main DB file and both `product-catalog.sqlite`
+  and `product-catalog.sqlite-info` are copied into `db/database/backups/<yyyy_mm_dd>/`.
 
-When `--sync` is used and the local catalog DB file is missing, the app now performs a bootstrap pull from Turso before loading configuration. This allows first-time setup without a pre-existing local database file.
+Whether this is active is controlled by `config/turso.json`'s `enabled` field. When
+disabled, the same connection type is used against the local file only (no sync_url),
+so the rest of the pipeline is unaffected either way. `--sync` does not toggle Turso on;
+it makes a misconfigured `turso.json` a hard error instead of a silent local-only run.
 
 ## CLI Usage
 
@@ -52,12 +65,6 @@ Use explicit paths:
 python src/main.py --data-path ./data --db-path ./db/database/product-catalog.sqlite
 ```
 
-Push local DB to Turso as a one-off initial load:
-
-```bash
-python src/turso_initial_load.py
-```
-
 One-time fetch + parse for a single ad-hoc URL (artifacts and parsed JSON land in `data/one-time/`):
 
 ```bash
@@ -79,8 +86,7 @@ python src/one_time_url.py "https://example.com/product"
 - `--collect-only`
   - skips fetch/parse and persists latest scrape session into DB.
 - `--sync`
-  - enables Turso pre/post sync for DB-backed runs.
-  - if local DB is missing, performs bootstrap pull from Turso first.
+  - requires Turso to be fully configured; fails the run instead of falling back to local-only.
 - `--once_per_day`
   - after the Turso pull, checks `scrape_stats` for a row with today's `session_date` (YYYYMMDD).
   - if such a row exists, the run is treated as already completed for the day and exits early with code 0 before fetch/parse/persist.
@@ -97,15 +103,8 @@ python src/one_time_url.py "https://example.com/product"
 
 Output layout: `data/one-time/scrape/<timestamp>/1/1/page.html`, `page.txt`, `metadata.json`, `parsed.json`, plus a combined `data/one-time/scrape/<timestamp>/parsed_output.json`.
 
-## CLI Options (`src/turso_initial_load.py`)
-
-- `--db-path <path>`
-  - local SQLite DB path to upload (defaults from `config/settings.py`).
-- `--turso-config-path <path>`
-  - path to Turso JSON config (default: `config/turso.json`).
-
 ## Why This Approach
 
-- keeps regular local SQLite workflow intact.
-- enables remote synchronization only when explicitly requested.
-- supports zero-local-file bootstrap in sync mode for easier environment setup.
+- keeps regular local SQLite workflow intact when Turso is disabled.
+- only ever syncs the delta with the remote (one `.sync()` per run), not the whole database.
+- supports zero-local-file bootstrap when the local replica is missing or corrupted.

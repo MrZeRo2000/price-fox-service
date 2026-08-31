@@ -1692,15 +1692,15 @@ class Fetcher:
         return parsed if parsed > 0 else fallback
 
     def _load_strategy_settings(self) -> dict[str, str]:
-        db_path = self.catalog_config.product_catalog_db_path
-        if not db_path:
+        connection = self.catalog_config.db_connection
+        if connection is None:
             return {}
         try:
-            repository = PriceStrategyRepository(db_path)
+            repository = PriceStrategyRepository(connection)
             return repository.load_settings()
         except Exception as exc:
             self.catalog_config.logger.warning(
-                f"Unable to load fetch strategy settings from DB '{db_path}': {exc}"
+                f"Unable to load fetch strategy settings from DB: {exc}"
             )
             return {}
 
@@ -1709,15 +1709,15 @@ class Fetcher:
         return self._to_positive_int(raw_value, fallback=20)
 
     def _load_site_fetch_strategy_overrides(self) -> dict[str, str]:
-        db_path = self.catalog_config.product_catalog_db_path
-        if not db_path:
+        connection = self.catalog_config.db_connection
+        if connection is None:
             return {}
         try:
-            repository = PriceStrategyRepository(db_path)
+            repository = PriceStrategyRepository(connection)
             raw_mapping = repository.load_domain_strategy_overrides()
         except Exception as exc:
             self.catalog_config.logger.warning(
-                f"Unable to load fetch strategy domains from DB '{db_path}': {exc}"
+                f"Unable to load fetch strategy domains from DB: {exc}"
             )
             return {}
 

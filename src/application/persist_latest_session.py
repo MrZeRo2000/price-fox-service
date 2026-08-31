@@ -10,9 +10,9 @@ from repositories import ScrapeDetailedRepository, VersionsRepository
 
 def persist_latest_scrape_results(catalog_config: CatalogConfig) -> dict:
     logger = catalog_config.logger
-    if catalog_config.product_catalog_db_path is None:
+    if catalog_config.db_connection is None:
         logger.warning(
-            "Skipping scrape result persistence because product catalog DB path is not configured."
+            "Skipping scrape result persistence because no product catalog DB connection is available."
         )
         return {
             "session_date": None,
@@ -39,28 +39,21 @@ def persist_latest_scrape_results(catalog_config: CatalogConfig) -> dict:
             "stats": None,
         }
 
-    scrape_detailed_repository = ScrapeDetailedRepository(
-        db_path=catalog_config.product_catalog_db_path
-    )
+    db_connection = catalog_config.db_connection
+    scrape_detailed_repository = ScrapeDetailedRepository(db_connection)
     persisted_results = scrape_detailed_repository.replace_session_rows(
         session_date=session_date,
         rows=rows,
     )
-    scrape_consolidated_processor = ScrapeConsolidatedProcessor(
-        db_path=catalog_config.product_catalog_db_path
-    )
+    scrape_consolidated_processor = ScrapeConsolidatedProcessor(db_connection)
     consolidated_results = scrape_consolidated_processor.replace_for_session(
         session_date=session_date
     )
-    scrape_analysis_processor = ScrapeAnalysisProcessor(
-        db_path=catalog_config.product_catalog_db_path
-    )
+    scrape_analysis_processor = ScrapeAnalysisProcessor(db_connection)
     analysis_results = scrape_analysis_processor.refresh()
-    scrape_stats_processor = ScrapeStatsProcessor(
-        db_path=catalog_config.product_catalog_db_path
-    )
+    scrape_stats_processor = ScrapeStatsProcessor(db_connection)
     stats_results = scrape_stats_processor.refresh()
-    versions_repository = VersionsRepository(db_path=catalog_config.product_catalog_db_path)
+    versions_repository = VersionsRepository(db_connection)
     version_update_result = versions_repository.touch_scrape_version()
     logger.info(
         f"Persisted scrape session_date={persisted_results['session_date']} "

@@ -1,5 +1,3 @@
-import sqlite3
-
 from models import CatalogData
 from .sqlite_base_repository import BaseSqliteRepository
 
@@ -7,23 +5,17 @@ from .sqlite_base_repository import BaseSqliteRepository
 class ProductCatalogRepository(BaseSqliteRepository):
     """Repository responsible for all product-catalog DB communication."""
 
-    def __init__(self, db_path: str):
-        super().__init__(
-            db_path,
-            missing_db_message=f"Product catalog db path {db_path} does not exist",
-        )
-
     def load_catalog_data(self) -> CatalogData:
-        with self._connect() as connection:
-            urls = self._fetch_urls(connection)
-            categories = self._fetch_categories(connection)
-            category_ids_by_product = self._fetch_category_ids_by_product(connection)
-            url_ids_by_product = self._fetch_url_ids_by_product(connection)
-            products = self._fetch_products(
-                connection=connection,
-                category_ids_by_product=category_ids_by_product,
-                url_ids_by_product=url_ids_by_product,
-            )
+        connection = self._connection
+        urls = self._fetch_urls(connection)
+        categories = self._fetch_categories(connection)
+        category_ids_by_product = self._fetch_category_ids_by_product(connection)
+        url_ids_by_product = self._fetch_url_ids_by_product(connection)
+        products = self._fetch_products(
+            connection=connection,
+            category_ids_by_product=category_ids_by_product,
+            url_ids_by_product=url_ids_by_product,
+        )
 
         return CatalogData.model_validate(
             {
@@ -34,21 +26,21 @@ class ProductCatalogRepository(BaseSqliteRepository):
         )
 
     @staticmethod
-    def _fetch_urls(connection: sqlite3.Connection) -> list[dict]:
+    def _fetch_urls(connection) -> list[dict]:
         rows = connection.execute(
             "SELECT id, url FROM urls ORDER BY id"
         ).fetchall()
         return [{"url_id": row[0], "url": row[1]} for row in rows]
 
     @staticmethod
-    def _fetch_categories(connection: sqlite3.Connection) -> list[dict]:
+    def _fetch_categories(connection) -> list[dict]:
         rows = connection.execute(
             "SELECT id, name FROM categories ORDER BY id"
         ).fetchall()
         return [{"id": row[0], "name": row[1]} for row in rows]
 
     @staticmethod
-    def _fetch_category_ids_by_product(connection: sqlite3.Connection) -> dict[int, list[int]]:
+    def _fetch_category_ids_by_product(connection) -> dict[int, list[int]]:
         rows = connection.execute(
             "SELECT product_id, category_id FROM product_categories ORDER BY product_id, category_id"
         ).fetchall()
@@ -58,7 +50,7 @@ class ProductCatalogRepository(BaseSqliteRepository):
         return mapping
 
     @staticmethod
-    def _fetch_url_ids_by_product(connection: sqlite3.Connection) -> dict[int, list[int]]:
+    def _fetch_url_ids_by_product(connection) -> dict[int, list[int]]:
         rows = connection.execute(
                 """
                 SELECT product_id, url_id
@@ -74,7 +66,7 @@ class ProductCatalogRepository(BaseSqliteRepository):
 
     @staticmethod
     def _fetch_products(
-        connection: sqlite3.Connection,
+        connection,
         category_ids_by_product: dict[int, list[int]],
         url_ids_by_product: dict[int, list[int]],
     ) -> list[dict]:

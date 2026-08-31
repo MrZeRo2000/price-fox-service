@@ -1,5 +1,3 @@
-import sqlite3
-
 from .sqlite_base_repository import BaseSqliteRepository
 
 
@@ -10,13 +8,12 @@ class ScrapeStatsRepository(BaseSqliteRepository):
 
     def has_rows_for_session_date(self, session_date: int) -> bool:
         try:
-            with self._connect() as connection:
-                row = connection.execute(
-                    f"SELECT 1 FROM {self.TABLE_NAME} WHERE session_date = ? LIMIT 1",
-                    (session_date,),
-                ).fetchone()
-                return row is not None
-        except sqlite3.OperationalError as exc:
+            row = self._connection.execute(
+                f"SELECT 1 FROM {self.TABLE_NAME} WHERE session_date = ? LIMIT 1",
+                (session_date,),
+            ).fetchone()
+            return row is not None
+        except Exception as exc:
             if "no such table" in str(exc).lower():
                 return False
             raise

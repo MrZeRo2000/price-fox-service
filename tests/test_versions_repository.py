@@ -27,8 +27,10 @@ def test_touch_scrape_version_updates_single_row(tmp_path: Path) -> None:
             (1, 0),
         )
 
-    repository = VersionsRepository(str(db_path))
+    connection = sqlite3.connect(db_path, isolation_level=None)
+    repository = VersionsRepository(connection)
     result = repository.touch_scrape_version()
+    connection.close()
 
     assert result == {"table": "versions", "updated_rows": 1, "row_count": 1}
     with sqlite3.connect(db_path) as connection:
@@ -51,8 +53,10 @@ def test_touch_scrape_version_requires_single_row(tmp_path: Path) -> None:
             (2, 0),
         )
 
-    repository = VersionsRepository(str(db_path))
+    connection = sqlite3.connect(db_path, isolation_level=None)
+    repository = VersionsRepository(connection)
     with pytest.raises(
         RuntimeError, match="Table 'versions' must contain exactly one row"
     ):
         repository.touch_scrape_version()
+    connection.close()
