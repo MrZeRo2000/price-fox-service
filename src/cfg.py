@@ -69,3 +69,7 @@ class CatalogConfig:
     @property
     def db_connection(self):
         return self._db_connection
+
+    @db_connection.setter
+    def db_connection(self, value):
+        self._db_connection = value

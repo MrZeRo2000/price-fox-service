@@ -152,43 +152,47 @@ def main() -> int:
                         )
                         return 0
 
-            catalog_config = CatalogConfig(
-                data_path=args.data_path,
-                config_path=args.config_path,
-                db_path=args.db_path,
-                db_connection=replica.connection,
-            )
-            logger = catalog_config.logger
-            _log_resolved_configuration(
-                logger,
+        catalog_config = CatalogConfig(
+            data_path=args.data_path,
+            config_path=args.config_path,
+            db_path=args.db_path,
+            db_connection=None,
+        )
+        logger = catalog_config.logger
+        _log_resolved_configuration(
+            logger,
+            catalog_config,
+            args,
+            turso_enabled=use_sqlite_catalog and turso_config.enabled,
+        )
+
+        if args.collect_only:
+            result = run_pipeline(
                 catalog_config,
-                args,
-                turso_enabled=use_sqlite_catalog and turso_config.enabled,
+                parse_only=args.parse_only,
+                collect_only=args.collect_only,
             )
+        else:
+            result = run_pipeline(catalog_config, parse_only=args.parse_only)
 
-            if args.collect_only:
-                result = run_pipeline(
-                    catalog_config,
-                    parse_only=args.parse_only,
-                    collect_only=args.collect_only,
-                )
-            else:
-                result = run_pipeline(catalog_config, parse_only=args.parse_only)
+        fetch_results = result.get("fetch_results", [])
+        parse_results = result.get("parse_results", [])
+        successful_parses = sum(1 for item in parse_results if item.get("status") == "success")
 
-            fetch_results = result.get("fetch_results", [])
-            parse_results = result.get("parse_results", [])
-            successful_parses = sum(1 for item in parse_results if item.get("status") == "success")
-
-            if args.collect_only:
-                logger.info("Collect-only run completed.")
-            elif args.parse_only:
-                logger.info("Parse-only run completed.")
-            else:
-                logger.info("Scraper run completed.")
-            logger.info(f"Fetched records: {len(fetch_results)}")
-            logger.info(f"Parsed records: {len(parse_results)}")
-            logger.info(f"Successful parses: {successful_parses}")
-            if not args.collect_only:
+        if args.collect_only:
+            logger.info("Collect-only run completed.")
+        elif args.parse_only:
+            logger.info("Parse-only run completed.")
+        else:
+            logger.info("Scraper run completed.")
+        logger.info(f"Fetched records: {len(fetch_results)}")
+        logger.info(f"Parsed records: {len(parse_results)}")
+        logger.info(f"Successful parses: {successful_parses}")
+        if not args.collect_only or args.sync:
+            with TursoReplicaConnection(
+                        resolved_settings.product_catalog_db_path, turso_config, logger=logger
+                    ) as replica:
+                catalog_config.db_connection = replica.connection
                 persist_latest_scrape_results(catalog_config)
     except Exception as exc:
         logger.error(f"Scraper failed: {exc}")
