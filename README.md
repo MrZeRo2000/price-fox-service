@@ -4,23 +4,27 @@ Price Fox Service fetches product pages, parses prices, and persists daily scrap
 
 ## Overall Architecture
 
-- `src/main.py` is the CLI entrypoint.
-- `src/application/run_pipeline.py` orchestrates fetch -> parse -> persist flows.
-- `src/scraper/fetcher.py` is the fetch orchestrator (job preparation, strategy selection, output placement).
+- `src/main.py` is the CLI entrypoint: it owns the DB connection lifetime and sequences sync -> fetch/parse -> persist.
+- `src/scraper/pipeline.py` holds `Scraper` and `run_pipeline`, the fetch -> parse flow.
+- `src/scraper/fetcher.py` is the fetch orchestrator (job preparation, fetching, output placement). Every URL is fetched with Playwright; there is no per-domain strategy selection. When a page comes back blocked, the fetcher falls back internally: anti-bot retry -> itbox persistent Chrome -> Jina reader.
 - `src/scraper/parser.py` reads fetched `page.html`/`page.txt` and extracts normalized prices. Out-of-stock pages are detected up front (schema.org `availability` and "Нет в наличии"/"Немає в наявності"/"Out of stock"-style badges in the upper part of the page) and reported as a failed parse (`status: "failed"`, `out_of_stock: true`, no price) instead of yielding a bogus price.
-- `src/application/persist_latest_session.py` writes parsed outputs into storage.
+- `src/repositories/` is all DB access: one module per table, plus `persist_latest_session.py`, which writes a parsed session through the repositories and processors and commits.
 - `src/turso_sync.py` owns the shared libSQL connection (local-only or Turso embedded replica) for the catalog DB.
 
 ## Turso Sync Integration
 
-`src/turso_sync.py`'s `TursoReplicaConnection` opens a single libSQL embedded-replica
-connection (`libsql.connect(<local_db_path>, sync_url=..., auth_token=...)`) for the
-whole pipeline run:
+`src/turso_sync.py`'s `TursoReplicaConnection` owns a libSQL embedded-replica
+connection (`libsql.connect(<local_db_path>, sync_url=..., auth_token=...)`).
+`src/main.py` builds one handle and enters it twice -- a short window before the run
+(sync + `--once-per-day` guard) and another after it (persist) -- rather than holding
+it open across fetch/parse, where an idle replica connection loses its Hrana stream
+and fails with `stream not found`:
 
-- Opening it calls `.sync()`, pulling any remote changes made since the last run.
-- Every repository/processor in the pipeline reads and writes through that same
-  connection for the rest of the run. Writes are forwarded to the remote transparently
-  as they happen -- there is no separate "push" step.
+- Opening it calls `.sync()`, pulling any remote changes made since the last open.
+- Every repository/processor writes through that connection, and the write is
+  forwarded to the remote on `commit()` -- there is no separate "push" step.
+- The connection is passed explicitly to `persist_latest_scrape_results`; it is not
+  carried on `CatalogConfig`, which holds only paths, the logger and catalog data.
 - If the local `product-catalog.sqlite` / `product-catalog.sqlite-info` pair is
   missing or incomplete (first run, or a corrupted local replica), the local replica
   files are removed and the same `connect()` + `.sync()` call bootstraps a fresh full
@@ -97,7 +101,7 @@ python src/one_time_url.py "https://example.com/product"
 - positional `url`
   - URL to fetch and parse through the full pipeline.
 - `--db-path <path>`
-  - overrides product catalog SQLite DB path used to load strategy settings.
+  - overrides product catalog SQLite DB path.
 - `--quiet`
   - suppresses stdout JSON output (the result file is still written).
 

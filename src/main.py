@@ -5,11 +5,11 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-from application import persist_latest_scrape_results, run_pipeline
 from logger import create_application_logger
 from cfg import CatalogConfig
 from config.settings import resolve_configuration_settings
-from repositories import ScrapeStatsRepository
+from repositories import ScrapeStatsRepository, persist_latest_scrape_results
+from scraper import run_pipeline
 from turso_sync import TursoReplicaConnection, load_turso_sync_configuration
 from version import APP_VERSION
 
@@ -127,7 +127,12 @@ def main() -> int:
         )
         return 1
 
-    replica_cm = (
+    # One reusable handle to the product catalog DB. It is entered twice on
+    # purpose -- once before the run and once after -- because holding a Turso
+    # embedded-replica connection open across the whole fetch/parse phase lets
+    # its Hrana stream expire ("stream not found"). Each `with` re-opens and
+    # re-syncs; `TursoReplicaConnection` and `nullcontext` are both reusable.
+    product_catalog_replica = (
         TursoReplicaConnection(
             resolved_settings.product_catalog_db_path, turso_config, logger=logger
         )
@@ -136,7 +141,7 @@ def main() -> int:
     )
 
     try:
-        with replica_cm as replica:
+        with product_catalog_replica as replica:
             if args.once_per_day:
                 if replica.connection is None:
                     logger.info(
@@ -156,7 +161,6 @@ def main() -> int:
             data_path=args.data_path,
             config_path=args.config_path,
             db_path=args.db_path,
-            db_connection=None,
         )
         logger = catalog_config.logger
         _log_resolved_configuration(
@@ -166,14 +170,11 @@ def main() -> int:
             turso_enabled=use_sqlite_catalog and turso_config.enabled,
         )
 
-        if args.collect_only:
-            result = run_pipeline(
-                catalog_config,
-                parse_only=args.parse_only,
-                collect_only=args.collect_only,
-            )
-        else:
-            result = run_pipeline(catalog_config, parse_only=args.parse_only)
+        result: dict = (
+            {"fetch_results": [], "parse_results": []}
+            if args.collect_only
+            else run_pipeline(catalog_config, parse_only=args.parse_only)
+        )
 
         fetch_results = result.get("fetch_results", [])
         parse_results = result.get("parse_results", [])
@@ -188,12 +189,11 @@ def main() -> int:
         logger.info(f"Fetched records: {len(fetch_results)}")
         logger.info(f"Parsed records: {len(parse_results)}")
         logger.info(f"Successful parses: {successful_parses}")
-        if not args.collect_only or args.sync:
-            with TursoReplicaConnection(
-                        resolved_settings.product_catalog_db_path, turso_config, logger=logger
-                    ) as replica:
-                catalog_config.db_connection = replica.connection
-                persist_latest_scrape_results(catalog_config)
+
+        with product_catalog_replica as replica:
+            result["collect_results"] = persist_latest_scrape_results(
+                catalog_config, replica.connection
+            )
     except Exception as exc:
         logger.error(f"Scraper failed: {exc}")
         return 1

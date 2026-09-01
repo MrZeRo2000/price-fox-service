@@ -1,15 +1,17 @@
-from .sqlite_base_repository import BaseSqliteRepository
+from .base_sqlite_repository import BaseSqliteRepository
 from .product_catalog import ProductCatalogRepository
-from .price_strategy import PriceStrategyRepository
 from .scrape_detailed import ScrapeDetailedRepository
 from .scrape_stats import ScrapeStatsRepository
 from .versions import VersionsRepository
 
+# Imported last: it builds on the repositories above.
+from .persist_latest_session import persist_latest_scrape_results
+
 __all__ = [
     "BaseSqliteRepository",
     "ProductCatalogRepository",
-    "PriceStrategyRepository",
     "ScrapeDetailedRepository",
     "ScrapeStatsRepository",
     "VersionsRepository",
+    "persist_latest_scrape_results",
 ]

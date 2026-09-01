@@ -4,15 +4,12 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
-from urllib.parse import urlparse
 
 from bs4 import BeautifulSoup
 from huggingface_hub import snapshot_download
-from repositories import PriceStrategyRepository
 from transformers import pipeline, AutoModelForCausalLM, AutoTokenizer
 
 from cfg import CatalogConfig
-from scraper.parse_strategies import GeminiUrlParseStrategy
 from session import resolve_parser_data_root
 
 
@@ -42,13 +39,6 @@ class Parser:
             item.url_id: str(item.url)
             for item in self.catalog_config.product_catalog_data.urls
         }
-        self._default_price_strategy = "playwright"
-        self._site_price_strategy_overrides = self._load_site_price_strategy_overrides()
-        self._strategy_settings = self._load_strategy_settings_from_database()
-        self._gemini_url_strategy = GeminiUrlParseStrategy(
-            strategy_settings=self._strategy_settings,
-            logger=self.logger,
-        )
         self._init_generator()
 
     def _is_model_cached_locally(self) -> bool:
@@ -84,80 +74,6 @@ class Parser:
         url = self._url_by_id.get(url_id)
         return product_name, url
 
-    @staticmethod
-    def _normalize_host(url: Optional[str]) -> str:
-        if not url:
-            return ""
-        return (urlparse(url).hostname or "").strip().lower()
-
-    @staticmethod
-    def _normalize_strategy_name(strategy_name: Optional[str]) -> str:
-        normalized = (strategy_name or "").strip().lower().replace("-", "_")
-        if normalized in {"", "playwright", "local", "local_hf", "huggingface"}:
-            return "playwright"
-        if normalized == "jina":
-            return "jina"
-        if normalized in {"gemini", "gemini_url"}:
-            return "gemini_url"
-        return "playwright"
-
-    def _load_site_price_strategy_overrides(self) -> dict[str, str]:
-        return self._load_site_price_strategy_overrides_from_database()
-
-    def _load_site_price_strategy_overrides_from_database(self) -> dict[str, str]:
-        connection = self.catalog_config.db_connection
-        if connection is None:
-            return {}
-        try:
-            repository = PriceStrategyRepository(connection)
-            raw_mapping = repository.load_domain_strategy_overrides()
-        except Exception as exc:
-            self.logger.warning(
-                f"Unable to load strategy domains from DB: {exc}"
-            )
-            return {}
-
-        normalized: dict[str, str] = {}
-        for host, strategy_name in raw_mapping.items():
-            host_key = str(host).strip().lower()
-            if not host_key:
-                continue
-            normalized[host_key] = self._normalize_strategy_name(strategy_name)
-        return normalized
-
-    def _load_strategy_settings_from_database(self) -> dict[str, str]:
-        connection = self.catalog_config.db_connection
-        if connection is None:
-            return {}
-        try:
-            repository = PriceStrategyRepository(connection)
-            return repository.load_settings()
-        except Exception as exc:
-            self.logger.warning(
-                f"Unable to load strategy settings from DB: {exc}"
-            )
-            return {}
-
-    def _resolve_price_strategy(self, url: Optional[str]) -> str:
-        host = self._normalize_host(url)
-        default_strategy = self._normalize_strategy_name(self._default_price_strategy)
-        if not host:
-            return default_strategy
-
-        if host in self._site_price_strategy_overrides:
-            return self._site_price_strategy_overrides[host]
-
-        best_suffix = ""
-        best_strategy = default_strategy
-        for suffix, strategy in self._site_price_strategy_overrides.items():
-            normalized_suffix = suffix.lstrip(".")
-            if not normalized_suffix:
-                continue
-            if host == normalized_suffix or host.endswith(f".{normalized_suffix}"):
-                if len(normalized_suffix) > len(best_suffix):
-                    best_suffix = normalized_suffix
-                    best_strategy = strategy
-        return best_strategy
 
     def _extract_price_with_default_pipeline(self, source: TextSources) -> dict:
         out_of_stock_evidence = self._detect_out_of_stock(source)
@@ -1083,11 +999,6 @@ class Parser:
         parse_started_at_dt = datetime.utcnow()
         parse_started_at = parse_started_at_dt.isoformat()
         url = self._url_by_id.get(url_id)
-        selected_strategy = self._resolve_price_strategy(url)
-        self.logger.info(
-            f"Planned parse strategy for url_id={url_id} "
-            f"({url if url is not None else 'unknown'}): {selected_strategy}"
-        )
         source = self._read_text_sources(url_folder)
 
         out_of_stock_evidence = self._detect_out_of_stock(source)
@@ -1132,51 +1043,9 @@ class Parser:
             return result
 
         if not source.text:
-            if selected_strategy == "gemini_url":
-                self.logger.info(
-                    f"No local content for url_id={url_id}; "
-                    "starting Gemini-URL LLM parse."
-                )
-                gemini_candidate = self._gemini_url_strategy.extract_price_from_url(url)
-            else:
-                self.logger.info(
-                    f"No local content for url_id={url_id} and strategy is "
-                    f"'{selected_strategy}'; skipping LLM parse."
-                )
-                gemini_candidate = None
-            if gemini_candidate is not None and gemini_candidate.get("status") == "success":
-                parse_finished_at_dt = datetime.utcnow()
-                parse_finished_at = parse_finished_at_dt.isoformat()
-                parse_duration_seconds = (
-                    parse_finished_at_dt - parse_started_at_dt
-                ).total_seconds()
-                result = {
-                    "status": "success",
-                    "product_id": product_id,
-                    "url_id": url_id,
-                    "url": url,
-                    "price": gemini_candidate.get("price"),
-                    "currency": gemini_candidate.get("currency"),
-                    "raw_price_text": gemini_candidate.get("raw_price_text"),
-                    "price_type": "product",
-                    "evidence_text": gemini_candidate.get("evidence_text"),
-                    "confidence": gemini_candidate.get("confidence", 0),
-                    "provider": gemini_candidate.get("provider"),
-                    "error": None,
-                    "model_id": self.model_id,
-                    "parse_started_at": parse_started_at,
-                    "parse_finished_at": parse_finished_at,
-                    "parse_duration_seconds": parse_duration_seconds,
-                    "parsed_at": parse_finished_at,
-                    "html_path": source.html_path,
-                    "txt_path": source.txt_path,
-                }
-                (url_folder / "parsed.json").write_text(
-                    json.dumps(result, indent=2, ensure_ascii=False),
-                    encoding="utf-8",
-                )
-                return result
-
+            self.logger.info(
+                f"No local content for url_id={url_id}; skipping LLM parse."
+            )
             parse_finished_at_dt = datetime.utcnow()
             parse_finished_at = parse_finished_at_dt.isoformat()
             parse_duration_seconds = (
@@ -1193,16 +1062,8 @@ class Parser:
                 "price_type": "other",
                 "evidence_text": None,
                 "confidence": 0,
-                "provider": (
-                    gemini_candidate.get("provider")
-                    if gemini_candidate is not None
-                    else None
-                ),
-                "error": (
-                    gemini_candidate.get("error")
-                    if gemini_candidate is not None
-                    else "Missing readable HTML/TXT content"
-                ),
+                "provider": None,
+                "error": "Missing readable HTML/TXT content",
                 "model_id": self.model_id,
                 "parse_started_at": parse_started_at,
                 "parse_finished_at": parse_finished_at,
@@ -1217,13 +1078,7 @@ class Parser:
             )
             return result
 
-        if selected_strategy == "gemini_url":
-            self.logger.info(
-                f"Starting Gemini-URL LLM parse for url_id={url_id}."
-            )
-            extracted = self._gemini_url_strategy.extract_price_from_url(url)
-        else:
-            extracted = self._extract_price_with_default_pipeline(source)
+        extracted = self._extract_price_with_default_pipeline(source)
 
         parse_finished_at_dt = datetime.utcnow()
         parse_finished_at = parse_finished_at_dt.isoformat()

@@ -7,13 +7,17 @@ from models import CatalogData
 
 
 class CatalogConfig:
-    """Class for configuration"""
+    """Resolved paths, logger and product catalog data for a pipeline run.
+
+    Deliberately holds no DB connection: the product catalog is read once at
+    construction time, and the shared Turso replica connection is passed
+    separately to whatever needs to write (see persist_latest_scrape_results).
+    """
     def __init__(
         self,
         data_path: str = None,
         config_path: str = None,
         db_path: str = None,
-        db_connection=None,
     ):
         settings = resolve_configuration_settings(
             data_path=data_path,
@@ -31,11 +35,10 @@ class CatalogConfig:
         self._logger = create_application_logger(data_path=data_path)
         self._product_catalog_path = product_catalog_path if config_path is not None else None
         self._product_catalog_db_path = product_catalog_db_path if config_path is None else None
-        self._db_connection = db_connection if config_path is None else None
         self._product_catalog_data = (
             self.load_configuration_from_json(product_catalog_path)
             if config_path is not None
-            else self.load_configuration_from_database(product_catalog_db_path, db_connection)
+            else self.load_configuration_from_database(product_catalog_db_path)
         )
 
     @staticmethod
@@ -43,8 +46,8 @@ class CatalogConfig:
         return load_catalog_from_json(product_catalog_path)
 
     @staticmethod
-    def load_configuration_from_database(product_catalog_db_path: str, db_connection) -> CatalogData:
-        return load_catalog_from_database(product_catalog_db_path, db_connection)
+    def load_configuration_from_database(product_catalog_db_path: str) -> CatalogData:
+        return load_catalog_from_database(product_catalog_db_path)
 
     @property
     def data_path(self):
@@ -65,11 +68,3 @@ class CatalogConfig:
     @property
     def logger(self):
         return self._logger
-
-    @property
-    def db_connection(self):
-        return self._db_connection
-
-    @db_connection.setter
-    def db_connection(self, value):
-        self._db_connection = value

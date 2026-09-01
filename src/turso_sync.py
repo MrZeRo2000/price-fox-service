@@ -1,15 +1,21 @@
 """
 Turso embedded-replica sync for the product catalog SQLite DB.
 
-``TursoReplicaConnection`` opens a single libsql connection for the whole
-run. When Turso is enabled, that connection is a libSQL embedded replica
-(``sync_url``/``auth_token``): reads are served locally, writes are forwarded
-to the remote transparently as they happen, and ``.sync()`` at open time
-pulls any remote changes made since the last run. No separate "push" step
-is needed. Every repository/processor in the pipeline must use this same
-connection for reads and writes -- writing through a different connection
-(e.g. plain ``sqlite3.connect``) desyncs the replica's ``-info`` bookkeeping
-and forces the next open to fall back to a full resync.
+``TursoReplicaConnection`` owns one libsql connection. When Turso is enabled,
+that connection is a libSQL embedded replica (``sync_url``/``auth_token``):
+reads are served locally, writes are forwarded to the remote transparently on
+commit, and ``.sync()`` at open time pulls any remote changes made since the
+last open. No separate "push" step is needed.
+
+The object is a *reusable* context manager: each ``with`` re-opens (and
+re-syncs) and each exit commits, checkpoints and backs up. Use it in short
+windows around the DB work rather than holding it open for the whole run --
+a replica connection left idle through a long fetch/parse phase loses its
+Hrana stream and the next statement fails with "stream not found".
+
+All pipeline writes must go through this connection; writing through a
+different one (e.g. plain ``sqlite3.connect``) desyncs the replica's
+``-info`` bookkeeping and forces the next open to do a full resync.
 """
 import json
 import logging
@@ -261,10 +267,25 @@ class TursoReplicaConnection:
         )
         return self
 
+    def commit(self) -> None:
+        """Commit the connection's open transaction (no-op when nothing is pending).
+
+        libsql connections default to DEFERRED isolation, so writes are only
+        durable -- locally and on the remote -- once committed.
+        """
+        if self._connection is None:
+            return
+        self._connection.commit()
+
     def close(self) -> None:
         if self._connection is None:
             return
         self._logger.info("Closing product catalog DB connection '%s'.", self._db_path)
+        try:
+            # Never let pending writes be silently dropped by close().
+            self._connection.commit()
+        except Exception as exc:
+            self._logger.warning("Failed to commit pending changes before close: %s", exc)
         try:
             self._connection.close()
         except Exception as exc:

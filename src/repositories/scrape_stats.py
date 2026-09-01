@@ -1,4 +1,4 @@
-from .sqlite_base_repository import BaseSqliteRepository
+from .base_sqlite_repository import BaseSqliteRepository
 
 
 class ScrapeStatsRepository(BaseSqliteRepository):

@@ -3,9 +3,9 @@ One-time URL fetch + parse runner.
 
 Runs the full price-fox pipeline (fetch -> parse) against a single ad-hoc URL,
 without touching the configured product catalog. A synthetic single-URL catalog
-is built in memory; DB-driven strategy settings (default fetch strategy, Jina
-rate limit, per-domain overrides) are still loaded from the regular product
-catalog SQLite DB so the run mirrors a production execution path.
+is built in memory; the run otherwise mirrors a production execution path and
+fetches with the same playwright strategy. Nothing is read from or written to
+the catalog DB, so no Turso sync happens for a one-time run.
 
 Artifacts land under data/one-time/:
     data/one-time/scrape/<timestamp>/1/1/page.html
@@ -26,12 +26,9 @@ import sys
 from pathlib import Path
 
 from cfg import CatalogConfig
-from config.settings import resolve_configuration_settings
-from logger import create_application_logger
 from models import CatalogData, CatalogUrl, Product
 from scraper import Scraper
 from session import resolve_latest_scrape_session_folder
-from turso_sync import TursoReplicaConnection, load_turso_sync_configuration
 
 
 ONE_TIME_PRODUCT_ID = 1
@@ -68,7 +65,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--db-path",
         default=None,
-        help="Override product catalog SQLite DB path used for strategy settings.",
+        help="Override product catalog SQLite DB path.",
     )
     parser.add_argument(
         "--quiet",
@@ -84,29 +81,20 @@ def main() -> int:
     one_time_root = _project_root() / "data" / "one-time"
     one_time_root.mkdir(parents=True, exist_ok=True)
 
-    turso_config = load_turso_sync_configuration()
-    db_path = resolve_configuration_settings(db_path=args.db_path).product_catalog_db_path
-    logger = create_application_logger(data_path=str(one_time_root))
+    catalog_config = CatalogConfig(
+        data_path=str(one_time_root),
+        db_path=args.db_path,
+    )
+    # The DB-backed catalog is irrelevant for a single ad-hoc URL; swap in a
+    # synthetic catalog so Fetcher/Parser still resolve product/url IDs.
+    catalog_config._product_catalog_data = _build_one_time_catalog(args.url)
+    logger = catalog_config.logger
 
-    with TursoReplicaConnection(db_path, turso_config, logger=logger) as replica:
-        catalog_config = CatalogConfig(
-            data_path=str(one_time_root),
-            config_path=None,
-            db_path=args.db_path,
-            db_connection=replica.connection,
-        )
-        # The DB-backed catalog is irrelevant for a single ad-hoc URL; swap in a
-        # synthetic catalog so Fetcher/Parser still resolve product/url IDs while
-        # DB-driven strategy settings (default strategy, jina rate limit, domain
-        # overrides) continue to load from the shared DB connection.
-        catalog_config._product_catalog_data = _build_one_time_catalog(args.url)
-        logger = catalog_config.logger
+    logger.info(f"One-time URL fetch+parse: {args.url}")
+    logger.info(f"Data root: {one_time_root}")
 
-        logger.info(f"One-time URL fetch+parse: {args.url}")
-        logger.info(f"Data root: {one_time_root}")
-
-        scraper = Scraper(catalog_config)
-        result = scraper.execute()
+    scraper = Scraper(catalog_config)
+    result = scraper.execute()
 
     session_folder = resolve_latest_scrape_session_folder(one_time_root)
     output_root = session_folder if session_folder is not None else one_time_root

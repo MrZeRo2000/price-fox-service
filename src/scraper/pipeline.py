@@ -24,3 +24,19 @@ class Scraper:
             "fetch_results": fetch_results,
             "parse_results": parse_results,
         }
+
+
+def run_pipeline(catalog_config: CatalogConfig, *, parse_only: bool = False) -> dict:
+    """Run fetch + parse (or parse only) and return their results.
+
+    Persistence is deliberately not done here: it needs the shared Turso
+    replica connection, which the caller owns. See persist_latest_scrape_results.
+    """
+    if parse_only:
+        parser = Parser(catalog_config)
+        return {
+            "fetch_results": [],
+            "parse_results": parser.execute(),
+        }
+
+    return Scraper(catalog_config).execute()

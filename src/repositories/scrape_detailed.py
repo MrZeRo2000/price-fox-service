@@ -1,7 +1,7 @@
 from datetime import datetime, timedelta
 from typing import Optional
 
-from .sqlite_base_repository import BaseSqliteRepository
+from .base_sqlite_repository import BaseSqliteRepository
 
 
 class ScrapeDetailedRepository(BaseSqliteRepository):

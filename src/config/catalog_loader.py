@@ -12,11 +12,14 @@ def load_catalog_from_json(product_catalog_path: str) -> CatalogData:
     return CatalogData.model_validate_json(path.read_text(encoding="utf-8"))
 
 
-def load_catalog_from_database(product_catalog_db_path: str, connection=None) -> CatalogData:
-    if connection is not None:
-        return ProductCatalogRepository(connection).load_catalog_data()
+def load_catalog_from_database(product_catalog_db_path: str) -> CatalogData:
+    """Read the catalog from the local DB file.
 
+    Read-only, and only ever called between replica sync windows, so a plain
+    sqlite3 connection is safe here -- it does not touch the replica's
+    ``-info`` bookkeeping the way a write through a foreign connection would.
+    """
     if not Path(product_catalog_db_path).exists():
         raise ValueError(f"Product catalog db path {product_catalog_db_path} does not exist")
-    with sqlite3.connect(product_catalog_db_path) as fallback_connection:
-        return ProductCatalogRepository(fallback_connection).load_catalog_data()
+    with sqlite3.connect(product_catalog_db_path) as connection:
+        return ProductCatalogRepository(connection).load_catalog_data()

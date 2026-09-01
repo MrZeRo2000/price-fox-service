@@ -1,5 +1,5 @@
 from models import CatalogData
-from .sqlite_base_repository import BaseSqliteRepository
+from .base_sqlite_repository import BaseSqliteRepository
 
 
 class ProductCatalogRepository(BaseSqliteRepository):

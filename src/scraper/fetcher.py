@@ -1,124 +1,3 @@
-from pathlib import Path
-
-from cfg import CatalogConfig
-from models import ScrapeSession
-from .fetch_strategies import (
-    FetchStrategy,
-    JinaFetchStrategy,
-    PlaywrightFetchStrategy,
-)
-
-
-class Fetcher:
-    def __init__(self, catalog_config: CatalogConfig, scrape_session: ScrapeSession):
-        self.catalog_config = catalog_config
-        self.scrape_session = scrape_session
-        self._strategy_settings = self._load_strategy_settings()
-
-    def _prepare_output_path(self) -> Path:
-        base_data_root = Path(self.catalog_config.data_path)
-        base_data_root.mkdir(parents=True, exist_ok=True)
-        scrape_root = base_data_root / "scrape"
-        scrape_root.mkdir(parents=True, exist_ok=True)
-        session_folder_name = self.scrape_session.fetch_start_datetime.strftime(
-            DATA_SESSION_FOLDER_DATETIME_FORMAT
-        )
-        session_data_root = scrape_root / session_folder_name
-        session_data_root.mkdir(parents=True, exist_ok=True)
-        return session_data_root
-
-    @staticmethod
-    def _product_url_output_dir(data_root: Path, product_id: int, url_id: int) -> Path:
-        output_dir = data_root / str(product_id) / str(url_id)
-        output_dir.mkdir(parents=True, exist_ok=True)
-        return output_dir
-
-    @staticmethod
-    def _place_result_into_product_url_folder(result: dict, output_dir: Path) -> dict:
-        if result.get("status") != "success":
-            return result
-
-        html_target = output_dir / "page.html"
-        text_target = output_dir / "page.txt"
-        metadata_target = output_dir / "metadata.json"
-
-        shutil.move(result["html"], html_target)
-        shutil.move(result["text"], text_target)
-        shutil.move(result["metadata"], metadata_target)
-
-        result["html"] = str(html_target)
-        result["text"] = str(text_target)
-        result["metadata"] = str(metadata_target)
-        return result
-
-    def _build_fetch_strategy(self) -> tuple[str, FetchStrategy]:
-        strategy_name = (self.catalog_config.fetch_strategy or "playwright").lower()
-        if strategy_name == "jina":
-            return strategy_name, JinaFetchStrategy(
-                rate_limit_rpm=self.catalog_config.jina_rate_limit_rpm
-            )
-        return "playwright", PlaywrightFetchStrategy()
-
-    def execute(self):
-        self.scrape_session.fetch_start_datetime = datetime.today()
-        data_root = self._prepare_output_path()
-        url_by_id = {
-            url.url_id: str(url.url) for url in self.catalog_config.product_catalog_data.urls
-        }
-        jobs = [
-            {
-                "product_id": product.id,
-                "url_id": url_id,
-                "url": url_by_id[url_id],
-            }
-            for product in self.catalog_config.product_catalog_data.products
-            for url_id in product.url_ids
-        ]
-
-        if not jobs:
-            self.scrape_session.fetch_end_datetime = datetime.today()
-            return []
-
-        urls = [job["url"] for job in jobs]
-        strategy_name, fetch_strategy = self._build_fetch_strategy()
-        self.catalog_config.logger.info(
-            f"Using fetch strategy: {strategy_name} "
-            f"(jina_rate_limit_rpm={self.catalog_config.jina_rate_limit_rpm})"
-        )
-        raw_results = fetch_strategy.fetch_batch(
-            urls=urls,
-            output_dir=str(data_root),
-            logger=self.catalog_config.logger,
-        )
-
-        all_results = []
-        for job, result in zip(jobs, raw_results):
-            output_dir = self._product_url_output_dir(
-                data_root=data_root,
-                product_id=job["product_id"],
-                url_id=job["url_id"],
-            )
-            placed_result = self._place_result_into_product_url_folder(result, output_dir)
-            all_results.append(
-                {
-                    "product_id": job["product_id"],
-                    "url_id": job["url_id"],
-                    "result": placed_result,
-                }
-            )
-
-        for item in data_root.iterdir():
-            if item.is_file():
-                item.unlink()
-
-        self.scrape_session.fetch_end_datetime = datetime.today()
-        return all_results
-
-    def execiute(self):
-        """
-        Backward-compatible misspelled alias.
-        """
-        return self.execute()
 from abc import ABC, abstractmethod
 from collections import deque
 import hashlib
@@ -139,7 +18,6 @@ from playwright.sync_api import sync_playwright
 
 from cfg import CatalogConfig
 from models import ScrapeSession
-from repositories import PriceStrategyRepository
 from session.constants import DATA_SESSION_FOLDER_DATETIME_FORMAT
 
 
@@ -439,7 +317,6 @@ class Fetcher:
     def __init__(self, catalog_config: CatalogConfig, scrape_session: ScrapeSession):
         self.catalog_config = catalog_config
         self.scrape_session = scrape_session
-        self._strategy_settings = self._load_strategy_settings()
 
     @staticmethod
     def content_stable_wait(page, max_wait=120, logger: Optional[logging.Logger] = None):
@@ -1668,99 +1545,6 @@ class Fetcher:
         result["metadata"] = str(metadata_target)
         return result
 
-    @staticmethod
-    def _normalize_fetch_strategy_name(strategy_name: Optional[str]) -> str:
-        normalized = (strategy_name or "").strip().lower().replace("-", "_")
-        if normalized == "jina":
-            return "jina"
-        if normalized in {"gemini", "gemini_url"}:
-            return "gemini_url"
-        return "playwright"
-
-    @staticmethod
-    def _normalize_host(url: Optional[str]) -> str:
-        if not url:
-            return ""
-        return (urlparse(url).hostname or "").strip().lower()
-
-    @staticmethod
-    def _to_positive_int(value: Optional[str], fallback: int) -> int:
-        try:
-            parsed = int(str(value).strip())
-        except Exception:
-            return fallback
-        return parsed if parsed > 0 else fallback
-
-    def _load_strategy_settings(self) -> dict[str, str]:
-        connection = self.catalog_config.db_connection
-        if connection is None:
-            return {}
-        try:
-            repository = PriceStrategyRepository(connection)
-            return repository.load_settings()
-        except Exception as exc:
-            self.catalog_config.logger.warning(
-                f"Unable to load fetch strategy settings from DB: {exc}"
-            )
-            return {}
-
-    def _jina_rate_limit_rpm(self) -> int:
-        raw_value = self._strategy_settings.get("jina_rate_limit_rpm")
-        return self._to_positive_int(raw_value, fallback=20)
-
-    def _load_site_fetch_strategy_overrides(self) -> dict[str, str]:
-        connection = self.catalog_config.db_connection
-        if connection is None:
-            return {}
-        try:
-            repository = PriceStrategyRepository(connection)
-            raw_mapping = repository.load_domain_strategy_overrides()
-        except Exception as exc:
-            self.catalog_config.logger.warning(
-                f"Unable to load fetch strategy domains from DB: {exc}"
-            )
-            return {}
-
-        normalized: dict[str, str] = {}
-        for domain, strategy_name in raw_mapping.items():
-            domain_key = str(domain or "").strip().lower()
-            if not domain_key:
-                continue
-            normalized[domain_key] = self._normalize_fetch_strategy_name(strategy_name)
-        return normalized
-
-    def _resolve_fetch_strategy(
-        self,
-        url: str,
-        site_overrides: dict[str, str],
-        default_strategy: str,
-    ) -> str:
-        host = self._normalize_host(url)
-        if not host:
-            return default_strategy
-        if host in site_overrides:
-            return site_overrides[host]
-
-        best_suffix = ""
-        best_strategy = default_strategy
-        for suffix, strategy in site_overrides.items():
-            normalized_suffix = suffix.lstrip(".")
-            if not normalized_suffix:
-                continue
-            if host == normalized_suffix or host.endswith(f".{normalized_suffix}"):
-                if len(normalized_suffix) > len(best_suffix):
-                    best_suffix = normalized_suffix
-                    best_strategy = strategy
-        return best_strategy
-
-    def _build_fetch_strategy(self, strategy_name: str) -> FetchStrategy:
-        normalized = self._normalize_fetch_strategy_name(strategy_name)
-        if normalized == "gemini_url":
-            return GeminiUrlFetchStrategy()
-        if normalized == "jina":
-            return JinaFetchStrategy(rate_limit_rpm=self._jina_rate_limit_rpm())
-        return PlaywrightFetchStrategy()
-
     def execute(self):
         self.scrape_session.fetch_start_datetime = datetime.today()
         data_root = self._prepare_output_path()
@@ -1782,53 +1566,18 @@ class Fetcher:
             self.scrape_session.fetch_end_datetime = datetime.today()
             return []
 
-        default_strategy = self._normalize_fetch_strategy_name(
-            self._strategy_settings.get("default_fetch_strategy", "playwright")
-        )
-        site_overrides = self._load_site_fetch_strategy_overrides()
+        urls = [job["url"] for job in jobs]
         self.catalog_config.logger.info(
-            f"Using DB-configurable fetch strategies "
-            f"(default={default_strategy}, jina_rate_limit_rpm={self._jina_rate_limit_rpm()})"
+            f"Fetching {len(urls)} URL(s) with the playwright fetch strategy"
         )
-
-        jobs_by_strategy: dict[str, list[tuple[int, dict]]] = {}
-        for index, job in enumerate(jobs):
-            strategy = self._resolve_fetch_strategy(
-                url=job["url"],
-                site_overrides=site_overrides,
-                default_strategy=default_strategy,
-            )
-            self.catalog_config.logger.info(
-                f"Planned fetch strategy for url_id={job['url_id']} "
-                f"({job['url']}): {strategy}"
-            )
-            jobs_by_strategy.setdefault(strategy, []).append((index, job))
-
-        raw_results_by_index: dict[int, dict] = {}
-        for strategy_name, indexed_jobs in jobs_by_strategy.items():
-            strategy_urls = [job["url"] for _, job in indexed_jobs]
-            fetch_strategy = self._build_fetch_strategy(strategy_name)
-            self.catalog_config.logger.info(
-                f"Fetching {len(strategy_urls)} URL(s) with strategy '{strategy_name}'"
-            )
-            strategy_results = fetch_strategy.fetch_batch(
-                urls=strategy_urls,
-                output_dir=str(data_root),
-                logger=self.catalog_config.logger,
-            )
-            for (index, _), result in zip(indexed_jobs, strategy_results):
-                raw_results_by_index[index] = result
+        raw_results = PlaywrightFetchStrategy().fetch_batch(
+            urls=urls,
+            output_dir=str(data_root),
+            logger=self.catalog_config.logger,
+        )
 
         all_results = []
-        for index, job in enumerate(jobs):
-            result = raw_results_by_index.get(
-                index,
-                {
-                    "url": job["url"],
-                    "status": "failed",
-                    "error": "Missing fetch result for resolved strategy batch",
-                },
-            )
+        for job, result in zip(jobs, raw_results):
             output_dir = self._product_url_output_dir(
                 data_root=data_root,
                 product_id=job["product_id"],

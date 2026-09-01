@@ -7,7 +7,7 @@ class _DummyRepository(BaseSqliteRepository):
     pass
 
 
-def test_sqlite_base_repository_stores_and_uses_connection() -> None:
+def test_base_sqlite_repository_stores_and_uses_connection() -> None:
     connection = sqlite3.connect(":memory:")
     repository = _DummyRepository(connection)
 

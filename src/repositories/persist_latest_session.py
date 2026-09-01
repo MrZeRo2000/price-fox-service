@@ -1,16 +1,30 @@
-from cfg import CatalogConfig
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
 from collector import ScrapeDetailedCollector
 from processor import (
     ScrapeAnalysisProcessor,
     ScrapeConsolidatedProcessor,
     ScrapeStatsProcessor,
 )
-from repositories import ScrapeDetailedRepository, VersionsRepository
+
+from .scrape_detailed import ScrapeDetailedRepository
+from .versions import VersionsRepository
+
+if TYPE_CHECKING:  # avoids a runtime cycle: cfg -> catalog_loader -> repositories
+    from cfg import CatalogConfig
 
 
-def persist_latest_scrape_results(catalog_config: CatalogConfig) -> dict:
+def persist_latest_scrape_results(catalog_config: CatalogConfig, db_connection) -> dict:
+    """Persist the latest scrape session through the given DB connection.
+
+    ``db_connection`` is the shared Turso replica connection for the run; it is
+    passed in rather than carried on ``catalog_config`` so the connection's
+    lifetime stays owned by the caller that opened it.
+    """
     logger = catalog_config.logger
-    if catalog_config.db_connection is None:
+    if db_connection is None:
         logger.warning(
             "Skipping scrape result persistence because no product catalog DB connection is available."
         )
@@ -39,7 +53,6 @@ def persist_latest_scrape_results(catalog_config: CatalogConfig) -> dict:
             "stats": None,
         }
 
-    db_connection = catalog_config.db_connection
     scrape_detailed_repository = ScrapeDetailedRepository(db_connection)
     persisted_results = scrape_detailed_repository.replace_session_rows(
         session_date=session_date,
@@ -55,6 +68,10 @@ def persist_latest_scrape_results(catalog_config: CatalogConfig) -> dict:
     stats_results = scrape_stats_processor.refresh()
     versions_repository = VersionsRepository(db_connection)
     version_update_result = versions_repository.touch_scrape_version()
+    # The shared libsql connection runs in DEFERRED isolation, so every write above
+    # is still inside an open transaction. Without this commit the whole session is
+    # rolled back when the connection closes -- locally and on the Turso remote.
+    db_connection.commit()
     logger.info(
         f"Persisted scrape session_date={persisted_results['session_date']} "
         f"(deleted={persisted_results['deleted_rows']}, saved={persisted_results['saved_rows']}, "
