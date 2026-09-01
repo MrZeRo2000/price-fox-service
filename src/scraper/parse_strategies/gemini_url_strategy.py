@@ -5,11 +5,12 @@ from typing import Optional
 from urllib import error as urllib_error
 from urllib import request as urllib_request
 
+from logger import logger
+
 
 class GeminiUrlParseStrategy:
-    def __init__(self, strategy_settings: dict[str, str], logger):
+    def __init__(self, strategy_settings: dict[str, str]):
         self._strategy_settings = strategy_settings
-        self._logger = logger
         self._models_logged = False
 
     @staticmethod
@@ -124,7 +125,7 @@ class GeminiUrlParseStrategy:
                 error_body = exc.read().decode("utf-8", errors="replace")
             except Exception:
                 error_body = ""
-            self._logger.warning(
+            logger.warning(
                 "Gemini ListModels HTTP error: status=%s reason=%s endpoint=%s body=%s",
                 exc.code,
                 exc.reason,
@@ -134,7 +135,7 @@ class GeminiUrlParseStrategy:
             self._models_logged = True
             return
         except Exception as exc:
-            self._logger.warning(
+            logger.warning(
                 "Gemini ListModels request failed: endpoint=%s error=%s",
                 endpoint,
                 exc,
@@ -143,13 +144,13 @@ class GeminiUrlParseStrategy:
             return
 
         models = payload.get("models", [])
-        self._logger.info("Gemini ListModels: total_models=%s", len(models))
+        logger.info("Gemini ListModels: total_models=%s", len(models))
         for model in models:
             if not isinstance(model, dict):
                 continue
             model_name = model.get("name") or model.get("displayName") or "unknown"
             methods = model.get("supportedGenerationMethods", [])
-            self._logger.info(
+            logger.info(
                 "Gemini model: name=%s supported_methods=%s",
                 model_name,
                 methods,
@@ -209,17 +210,17 @@ class GeminiUrlParseStrategy:
             headers=request_headers,
             method="POST",
         )
-        self._logger.info(
+        logger.info(
             "Gemini request: model=%s timeout=%ss endpoint=%s",
             model_name,
             timeout_seconds,
             endpoint,
         )
-        self._logger.info(
+        logger.info(
             "Gemini request headers: %s",
             json.dumps(request_headers_for_log, ensure_ascii=False),
         )
-        self._logger.info("Gemini request body: %s", request_body_json)
+        logger.info("Gemini request body: %s", request_body_json)
 
         retry_delays_seconds = [3, 10, 20]
         last_error_result = None
@@ -236,7 +237,7 @@ class GeminiUrlParseStrategy:
                     error_body = ""
                 error_body_snippet = error_body[:1200] if error_body else ""
                 retry_after = exc.headers.get("Retry-After") if exc.headers else None
-                self._logger.error(
+                logger.error(
                     "Gemini HTTP error: status=%s reason=%s retry_after=%s endpoint=%s body=%s",
                     exc.code,
                     exc.reason,
@@ -269,7 +270,7 @@ class GeminiUrlParseStrategy:
                         delay = hint_seconds + 1.0
                     else:
                         delay = float(retry_delays_seconds[attempt])
-                    self._logger.warning(
+                    logger.warning(
                         "Gemini HTTP 429 detected. Retrying in %.3fs (attempt %s/%s)...",
                         delay,
                         attempt + 1,
@@ -279,7 +280,7 @@ class GeminiUrlParseStrategy:
                     continue
                 return last_error_result
             except Exception as exc:
-                self._logger.error(
+                logger.error(
                     "Gemini request failed: model=%s endpoint=%s error=%s",
                     model_name,
                     endpoint,
@@ -307,7 +308,7 @@ class GeminiUrlParseStrategy:
             )
 
         response_text = self._extract_gemini_text_response(payload)
-        self._logger.info("Gemini raw response text: %s", response_text)
+        logger.info("Gemini raw response text: %s", response_text)
         parsed = self._safe_json_object_from_text(response_text)
         if parsed is None:
             return {
@@ -321,7 +322,7 @@ class GeminiUrlParseStrategy:
                 "provider": "gemini-url",
                 "error": "Gemini response is not parseable JSON object",
             }
-        self._logger.info(
+        logger.info(
             "Gemini parsed response JSON: %s",
             json.dumps(parsed, ensure_ascii=False),
         )

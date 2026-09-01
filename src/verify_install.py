@@ -1,15 +1,11 @@
 from playwright.sync_api import sync_playwright
 import sys
 
-from logger import create_application_logger
-from config.settings import default_data_path
+from logger import logger
 
 
 def verify_installation():
     """Verify Playwright is installed correctly"""
-    logger = create_application_logger(
-        data_path=default_data_path()
-    )
     try:
         with sync_playwright() as p:
             logger.info("✓ Playwright imported successfully")

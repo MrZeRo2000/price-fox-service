@@ -18,7 +18,6 @@ different one (e.g. plain ``sqlite3.connect``) desyncs the replica's
 ``-info`` bookkeeping and forces the next open to do a full resync.
 """
 import json
-import logging
 import os
 import re
 import shutil
@@ -29,7 +28,8 @@ from dataclasses import dataclass
 from datetime import datetime
 from urllib.parse import urlparse
 
-_module_logger = logging.getLogger(__name__)
+from logger import logger
+
 
 BACKUP_DATE_FOLDER_FORMAT = "%Y_%m_%d"
 BACKUP_RETENTION_COUNT = 10
@@ -104,7 +104,7 @@ def load_turso_sync_configuration(config_path: str | None = None) -> TursoSyncCo
     )
 
 
-def flush_sqlite_to_disk(db_path: str, *, logger: logging.Logger | None = None) -> None:
+def flush_sqlite_to_disk(db_path: str) -> None:
     """
     Merge WAL into the main DB file and truncate the WAL so the on-disk file
     is a complete snapshot (important before copying it to a backup).
@@ -112,8 +112,7 @@ def flush_sqlite_to_disk(db_path: str, *, logger: logging.Logger | None = None) 
     abs_path = os.path.abspath(db_path)
     if not os.path.exists(abs_path):
         return
-    if logger is not None:
-        logger.info("Checkpointing WAL into '%s'.", abs_path)
+    logger.info("Checkpointing WAL into '%s'.", abs_path)
     deadline = time.monotonic() + 120.0
     while time.monotonic() < deadline:
         with sqlite3.connect(abs_path, timeout=120.0) as conn:
@@ -130,7 +129,7 @@ def _replica_files_present(db_path: str) -> bool:
     return os.path.exists(db_path) and os.path.exists(db_path + "-info")
 
 
-def _remove_replica_files(db_path: str, *, logger: logging.Logger) -> None:
+def _remove_replica_files(db_path: str) -> None:
     removed = []
     for suffix in ("",) + _REPLICA_SIDECAR_SUFFIXES:
         path = db_path + suffix
@@ -161,7 +160,7 @@ def _prune_old_backups(backups_root: str, keep: int) -> None:
         shutil.rmtree(os.path.join(backups_root, name), ignore_errors=True)
 
 
-def _backup_replica_files(db_path: str, *, logger: logging.Logger) -> None:
+def _backup_replica_files(db_path: str) -> None:
     """Copy the (checkpointed) DB file and its -info sidecar into backups/yyyy_mm_dd/."""
     abs_path = os.path.abspath(db_path)
     backups_root = _backups_root_for_db(abs_path)
@@ -210,11 +209,9 @@ class TursoReplicaConnection:
         self,
         db_path: str,
         config: TursoSyncConfiguration,
-        logger: logging.Logger | None = None,
     ):
         self._db_path = db_path
         self._config = config
-        self._logger = logger or _module_logger
         self._connection = None
 
     @property
@@ -225,7 +222,7 @@ class TursoReplicaConnection:
         os.makedirs(os.path.dirname(self._db_path), exist_ok=True)
 
         if not self._config.enabled:
-            self._logger.info(
+            logger.info(
                 "Opening product catalog DB '%s' (Turso sync disabled, local only).",
                 self._db_path,
             )
@@ -241,27 +238,27 @@ class TursoReplicaConnection:
                 f"Turso is enabled, but url/auth_token are missing in '{self._config.config_path}'."
             )
 
-        self._logger.info(
+        logger.info(
             "Opening product catalog DB '%s' as a Turso embedded replica of %s.",
             self._db_path,
             describe_sync_url_for_logs(self._config.url),
         )
 
         if not _replica_files_present(self._db_path):
-            self._logger.info(
+            logger.info(
                 "Local replica files for '%s' are missing or incomplete; "
                 "a full resync from Turso will run instead of an incremental sync.",
                 self._db_path,
             )
-            _remove_replica_files(self._db_path, logger=self._logger)
+            _remove_replica_files(self._db_path)
 
-        self._logger.info("Syncing with Turso remote %s ...", describe_sync_url_for_logs(self._config.url))
+        logger.info("Syncing with Turso remote %s ...", describe_sync_url_for_logs(self._config.url))
         started = time.monotonic()
         self._connection = _connect_libsql(
             self._db_path, self._config.url, self._config.auth_token
         )
         self._connection.sync()
-        self._logger.info(
+        logger.info(
             "Turso sync completed in %sms.",
             int((time.monotonic() - started) * 1000),
         )
@@ -280,19 +277,19 @@ class TursoReplicaConnection:
     def close(self) -> None:
         if self._connection is None:
             return
-        self._logger.info("Closing product catalog DB connection '%s'.", self._db_path)
+        logger.info("Closing product catalog DB connection '%s'.", self._db_path)
         try:
             # Never let pending writes be silently dropped by close().
             self._connection.commit()
         except Exception as exc:
-            self._logger.warning("Failed to commit pending changes before close: %s", exc)
+            logger.warning("Failed to commit pending changes before close: %s", exc)
         try:
             self._connection.close()
         except Exception as exc:
-            self._logger.debug("Ignoring error while closing replica connection: %s", exc)
+            logger.debug("Ignoring error while closing replica connection: %s", exc)
         self._connection = None
-        flush_sqlite_to_disk(self._db_path, logger=self._logger)
-        _backup_replica_files(self._db_path, logger=self._logger)
+        flush_sqlite_to_disk(self._db_path)
+        _backup_replica_files(self._db_path)
 
     def __enter__(self) -> "TursoReplicaConnection":
         return self.open()

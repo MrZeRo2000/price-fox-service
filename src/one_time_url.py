@@ -26,6 +26,7 @@ import sys
 from pathlib import Path
 
 from cfg import CatalogConfig
+from logger import configure_logging, logger
 from models import CatalogData, CatalogUrl, Product
 from scraper import Scraper
 from session import resolve_latest_scrape_session_folder
@@ -80,6 +81,7 @@ def main() -> int:
 
     one_time_root = _project_root() / "data" / "one-time"
     one_time_root.mkdir(parents=True, exist_ok=True)
+    configure_logging(data_path=str(one_time_root))
 
     catalog_config = CatalogConfig(
         data_path=str(one_time_root),
@@ -88,7 +90,6 @@ def main() -> int:
     # The DB-backed catalog is irrelevant for a single ad-hoc URL; swap in a
     # synthetic catalog so Fetcher/Parser still resolve product/url IDs.
     catalog_config._product_catalog_data = _build_one_time_catalog(args.url)
-    logger = catalog_config.logger
 
     logger.info(f"One-time URL fetch+parse: {args.url}")
     logger.info(f"Data root: {one_time_root}")

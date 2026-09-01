@@ -6,10 +6,12 @@ Price Fox Service fetches product pages, parses prices, and persists daily scrap
 
 - `src/main.py` is the CLI entrypoint: it owns the DB connection lifetime and sequences sync -> fetch/parse -> persist.
 - `src/scraper/pipeline.py` holds `Scraper` and `run_pipeline`, the fetch -> parse flow.
-- `src/scraper/fetcher.py` is the fetch orchestrator (job preparation, fetching, output placement). Every URL is fetched with Playwright; there is no per-domain strategy selection. When a page comes back blocked, the fetcher falls back internally: anti-bot retry -> itbox persistent Chrome -> Jina reader.
+- `src/scraper/fetcher.py` is the fetch orchestrator only: it builds jobs from the catalog, hands them to a strategy, and files artifacts under `<session>/<product_id>/<url_id>/`.
+- `src/scraper/fetch_strategies/` holds the fetching itself, one module per strategy behind `BaseFetchStrategy`. `PlaywrightFetchStrategy` is the only one wired up -- every URL goes through it, and there is no per-domain strategy selection. When a page comes back blocked it walks a recovery chain internally: anti-bot retry -> itbox persistent Chrome -> Jina reader. `JinaFetchStrategy` and `GeminiUrlFetchStrategy` are implemented but not currently selected by anything.
 - `src/scraper/parser.py` reads fetched `page.html`/`page.txt` and extracts normalized prices. Out-of-stock pages are detected up front (schema.org `availability` and "Нет в наличии"/"Немає в наявності"/"Out of stock"-style badges in the upper part of the page) and reported as a failed parse (`status: "failed"`, `out_of_stock: true`, no price) instead of yielding a bogus price.
 - `src/repositories/` is all DB access: one module per table, plus `persist_latest_session.py`, which writes a parsed session through the repositories and processors and commits.
 - `src/turso_sync.py` owns the shared libSQL connection (local-only or Turso embedded replica) for the catalog DB.
+- `src/logger.py` is the application-wide logger singleton. Any module does `from logger import logger` and logs; nothing accepts or forwards a logger argument. It self-configures on import, and entry points (`main.py`, `one_time_url.py`, `tests/conftest.py`) call `configure_logging(data_path=...)` once at startup to route output to `log/<data_dir_name>_<yyyymmdd>.log`.
 
 ## Turso Sync Integration
 
@@ -24,7 +26,7 @@ and fails with `stream not found`:
 - Every repository/processor writes through that connection, and the write is
   forwarded to the remote on `commit()` -- there is no separate "push" step.
 - The connection is passed explicitly to `persist_latest_scrape_results`; it is not
-  carried on `CatalogConfig`, which holds only paths, the logger and catalog data.
+  carried on `CatalogConfig`, which holds only paths and catalog data.
 - If the local `product-catalog.sqlite` / `product-catalog.sqlite-info` pair is
   missing or incomplete (first run, or a corrupted local replica), the local replica
   files are removed and the same `connect()` + `.sync()` call bootstraps a fresh full

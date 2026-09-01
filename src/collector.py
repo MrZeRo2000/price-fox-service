@@ -1,19 +1,18 @@
 from __future__ import annotations
 
 import json
-import logging
 from decimal import Decimal, ROUND_HALF_UP
 from pathlib import Path
 from typing import Optional
 
+from logger import logger
 from session import resolve_latest_scrape_session_folder
 
 class ScrapeDetailedCollector:
     """Collect scrape_detailed rows from latest scrape session folder."""
 
-    def __init__(self, data_path: str, logger: Optional[logging.Logger] = None):
+    def __init__(self, data_path: str):
         self._data_path = Path(data_path)
-        self._logger = logger or logging.getLogger("price_fox")
 
         if not self._data_path.exists():
             raise ValueError(f"Data path does not exist: {self._data_path}")
@@ -48,7 +47,7 @@ class ScrapeDetailedCollector:
     ) -> tuple[Optional[int], list[tuple[int, int, int, str, int, Optional[int], Optional[str]]]]:
         latest_session_folder = self._resolve_latest_session_folder()
         if latest_session_folder is None:
-            self._logger.info("No scrape session folders found in data/scrape.")
+            logger.info("No scrape session folders found in data/scrape.")
             return None, []
 
         session_date = self._to_session_date(latest_session_folder.name)
@@ -67,7 +66,7 @@ class ScrapeDetailedCollector:
                 metadata_path = url_folder / "metadata.json"
                 parsed_path = url_folder / "parsed.json"
                 if not metadata_path.exists() or not parsed_path.exists():
-                    self._logger.warning(
+                    logger.warning(
                         "Skipping product_id=%s, url_id=%s because metadata.json or parsed.json is missing.",
                         product_id,
                         url_id,

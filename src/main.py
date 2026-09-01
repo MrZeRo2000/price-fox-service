@@ -5,7 +5,7 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-from logger import create_application_logger
+from logger import configure_logging, logger
 from cfg import CatalogConfig
 from config.settings import resolve_configuration_settings
 from repositories import ScrapeStatsRepository, persist_latest_scrape_results
@@ -19,7 +19,6 @@ class _NoOpReplica:
 
 
 def _log_resolved_configuration(
-    logger,
     catalog_config: CatalogConfig,
     args: argparse.Namespace,
     turso_enabled: bool,
@@ -114,8 +113,7 @@ def main() -> int:
         config_path=args.config_path,
         db_path=args.db_path,
     )
-    resolved_data_path = resolved_settings.data_path
-    logger = create_application_logger(data_path=resolved_data_path)
+    configure_logging(data_path=resolved_settings.data_path)
     logger.info(f"Price Fox version: {APP_VERSION}")
 
     turso_config = load_turso_sync_configuration()
@@ -134,7 +132,7 @@ def main() -> int:
     # re-syncs; `TursoReplicaConnection` and `nullcontext` are both reusable.
     product_catalog_replica = (
         TursoReplicaConnection(
-            resolved_settings.product_catalog_db_path, turso_config, logger=logger
+            resolved_settings.product_catalog_db_path, turso_config
         )
         if use_sqlite_catalog
         else contextlib.nullcontext(_NoOpReplica())
@@ -162,9 +160,7 @@ def main() -> int:
             config_path=args.config_path,
             db_path=args.db_path,
         )
-        logger = catalog_config.logger
         _log_resolved_configuration(
-            logger,
             catalog_config,
             args,
             turso_enabled=use_sqlite_catalog and turso_config.enabled,

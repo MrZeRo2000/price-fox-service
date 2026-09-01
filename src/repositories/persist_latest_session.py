@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from collector import ScrapeDetailedCollector
+from logger import logger
 from processor import (
     ScrapeAnalysisProcessor,
     ScrapeConsolidatedProcessor,
@@ -23,7 +24,6 @@ def persist_latest_scrape_results(catalog_config: CatalogConfig, db_connection) 
     passed in rather than carried on ``catalog_config`` so the connection's
     lifetime stays owned by the caller that opened it.
     """
-    logger = catalog_config.logger
     if db_connection is None:
         logger.warning(
             "Skipping scrape result persistence because no product catalog DB connection is available."
@@ -39,7 +39,6 @@ def persist_latest_scrape_results(catalog_config: CatalogConfig, db_connection) 
 
     scrape_detailed_collector = ScrapeDetailedCollector(
         data_path=catalog_config.data_path,
-        logger=logger,
     )
     session_date, rows = scrape_detailed_collector.collect_latest_session_rows()
     if session_date is None:

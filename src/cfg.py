@@ -1,17 +1,17 @@
 import os
 
-from logger import create_application_logger
 from config.catalog_loader import load_catalog_from_database, load_catalog_from_json
 from config.settings import resolve_configuration_settings
 from models import CatalogData
 
 
 class CatalogConfig:
-    """Resolved paths, logger and product catalog data for a pipeline run.
+    """Resolved paths and product catalog data for a pipeline run.
 
-    Deliberately holds no DB connection: the product catalog is read once at
-    construction time, and the shared Turso replica connection is passed
-    separately to whatever needs to write (see persist_latest_scrape_results).
+    Deliberately holds neither a DB connection nor a logger: the catalog is read
+    once at construction time, the shared Turso replica connection is passed
+    separately to whatever writes (see persist_latest_scrape_results), and the
+    logger is the application-wide singleton (``from logger import logger``).
     """
     def __init__(
         self,
@@ -32,7 +32,6 @@ class CatalogConfig:
             os.makedirs(data_path, exist_ok=True)
 
         self._data_path = data_path
-        self._logger = create_application_logger(data_path=data_path)
         self._product_catalog_path = product_catalog_path if config_path is not None else None
         self._product_catalog_db_path = product_catalog_db_path if config_path is None else None
         self._product_catalog_data = (
@@ -64,7 +63,3 @@ class CatalogConfig:
     @property
     def product_catalog_data(self):
         return self._product_catalog_data
-
-    @property
-    def logger(self):
-        return self._logger

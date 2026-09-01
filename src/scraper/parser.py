@@ -10,6 +10,7 @@ from huggingface_hub import snapshot_download
 from transformers import pipeline, AutoModelForCausalLM, AutoTokenizer
 
 from cfg import CatalogConfig
+from logger import logger
 from session import resolve_parser_data_root
 
 
@@ -27,7 +28,6 @@ class Parser:
 
     def __init__(self, catalog_config: CatalogConfig, model_id: str = "Qwen/Qwen2.5-1.5B-Instruct"):
         self.catalog_config = catalog_config
-        self.logger = catalog_config.logger
         self.model_id = model_id
         self.generator = None
         self.generator_task = None
@@ -53,7 +53,7 @@ class Parser:
 
     def _ensure_model_available_locally(self):
         if self._is_model_cached_locally():
-            self.logger.info(f"Model '{self.model_id}' found in local HF cache.")
+            logger.info(f"Model '{self.model_id}' found in local HF cache.")
             return
 
         raise RuntimeError(
@@ -78,7 +78,7 @@ class Parser:
     def _extract_price_with_default_pipeline(self, source: TextSources) -> dict:
         out_of_stock_evidence = self._detect_out_of_stock(source)
         if out_of_stock_evidence is not None:
-            self.logger.info(
+            logger.info(
                 "Product detected as out of stock; skipping price extraction "
                 f"(no heuristic or LLM parse). Evidence: {out_of_stock_evidence}"
             )
@@ -96,14 +96,14 @@ class Parser:
             fallback = html_candidate or text_candidate
 
         if fallback is not None and fallback.get("price_type") == "product":
-            self.logger.info(
+            logger.info(
                 "Product price resolved via heuristics "
                 f"(provider={fallback.get('provider')}, "
                 f"confidence={fallback.get('confidence')}); skipping local LLM parse."
             )
             extracted = fallback
         else:
-            self.logger.info(
+            logger.info(
                 "Heuristics did not yield a product price; "
                 "starting local LLM (HuggingFace) parse."
             )
@@ -883,7 +883,7 @@ class Parser:
 
     def _extract_price_with_hf(self, text: str) -> dict:
         if self.generator is None:
-            self.logger.warning(
+            logger.warning(
                 "Local LLM parse skipped: generator is not initialized "
                 f"({self._generator_init_error})."
             )
@@ -903,7 +903,7 @@ class Parser:
         chunks = self._chunk_text(text, chunk_size=24000, overlap=2000)
         candidates = snippets + chunks[:6]
 
-        self.logger.info(
+        logger.info(
             f"Local LLM ({self.model_id}) parse started over "
             f"{len(candidates)} candidate text segment(s)."
         )
@@ -1003,7 +1003,7 @@ class Parser:
 
         out_of_stock_evidence = self._detect_out_of_stock(source)
         if out_of_stock_evidence is not None:
-            self.logger.info(
+            logger.info(
                 f"Product url_id={url_id} detected as out of stock; "
                 "marking parse as failed (no heuristic or LLM parse). "
                 f"Evidence: {out_of_stock_evidence}"
@@ -1043,7 +1043,7 @@ class Parser:
             return result
 
         if not source.text:
-            self.logger.info(
+            logger.info(
                 f"No local content for url_id={url_id}; skipping LLM parse."
             )
             parse_finished_at_dt = datetime.utcnow()
@@ -1128,7 +1128,7 @@ class Parser:
                     product_id=product_id,
                     url_id=url_id,
                 )
-                self.logger.info(
+                logger.info(
                     f"Parsing product='{product_name}' (id={product_id}) "
                     f"for url_id={url_id}, "
                     f"url='{url if url is not None else 'unknown'}'"

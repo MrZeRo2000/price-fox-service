@@ -1,3 +1,9 @@
+"""Jina reader fetch strategy.
+
+Pulls a markdown rendering of a page through https://r.jina.ai/ instead of
+driving a browser. Used by PlaywrightFetchStrategy as a last-resort fallback
+for pages that stay blocked; see _run_jina_fallback_fetch.
+"""
 from collections import deque
 import html
 import json
@@ -9,17 +15,18 @@ from urllib import error as urllib_error
 from urllib import parse as urllib_parse
 from urllib import request as urllib_request
 
-from .base import FetchStrategy
+from logger import logger
+
+from .base_fetch_strategy import BaseFetchStrategy
 
 
-class JinaFetchStrategy(FetchStrategy):
+class JinaFetchStrategy(BaseFetchStrategy):
     def __init__(self, rate_limit_rpm: int = 20, timeout_seconds: int = 30):
         self.rate_limit_rpm = max(1, int(rate_limit_rpm))
         self.timeout_seconds = max(5, int(timeout_seconds))
         self._request_timestamps = deque()
 
-    def _wait_for_rate_limit(self, logger: Optional[logging.Logger] = None):
-        active_logger = logger or logging.getLogger("price_fox")
+    def _wait_for_rate_limit(self):
         while True:
             now = time.time()
             while self._request_timestamps and now - self._request_timestamps[0] >= 60:
@@ -28,7 +35,7 @@ class JinaFetchStrategy(FetchStrategy):
                 return
             wait_seconds = 60 - (now - self._request_timestamps[0])
             wait_seconds = max(0.1, wait_seconds)
-            active_logger.info(
+            logger.info(
                 f"⏳ Jina strategy rate limit reached ({self.rate_limit_rpm}/min). "
                 f"Sleeping {wait_seconds:.1f}s..."
             )
@@ -39,13 +46,12 @@ class JinaFetchStrategy(FetchStrategy):
         encoded_url = urllib_parse.quote(url, safe=":/?&=#%")
         return f"https://r.jina.ai/{encoded_url}"
 
-    def _fetch_markdown(self, url: str, logger: Optional[logging.Logger] = None) -> str:
-        active_logger = logger or logging.getLogger("price_fox")
+    def _fetch_markdown(self, url: str) -> str:
         reader_url = self._build_jina_reader_url(url)
         retry_delays = [2, 5, 10]
 
         for attempt in range(len(retry_delays) + 1):
-            self._wait_for_rate_limit(active_logger)
+            self._wait_for_rate_limit()
             request = urllib_request.Request(
                 reader_url,
                 headers={
@@ -65,7 +71,7 @@ class JinaFetchStrategy(FetchStrategy):
                 retryable = exc.code in {429, 500, 502, 503, 504}
                 if attempt < len(retry_delays) and retryable:
                     delay = retry_delays[attempt]
-                    active_logger.warning(
+                    logger.warning(
                         f"  ⚠️ Jina HTTP {exc.code} for '{url}'. Retrying in {delay}s..."
                     )
                     time.sleep(delay)
@@ -74,7 +80,7 @@ class JinaFetchStrategy(FetchStrategy):
             except urllib_error.URLError as exc:
                 if attempt < len(retry_delays):
                     delay = retry_delays[attempt]
-                    active_logger.warning(
+                    logger.warning(
                         f"  ⚠️ Jina network error for '{url}': {exc.reason}. "
                         f"Retrying in {delay}s..."
                     )
@@ -91,9 +97,8 @@ class JinaFetchStrategy(FetchStrategy):
         output_dir: str,
         browser_session_id: str,
         markdown_content: str,
-        logger: Optional[logging.Logger] = None,
+        scraping_strategy_used: str = "jina",
     ) -> dict:
-        active_logger = logger or logging.getLogger("price_fox")
         timestamp = time.strftime("%Y%m%d_%H%M%S")
         safe_name = (
             url.replace("https://", "").replace("http://", "").replace("/", "_")[:50]
@@ -124,7 +129,7 @@ class JinaFetchStrategy(FetchStrategy):
             "reliability_score": None,
             "wait_time": None,
             "fetch_attempts": 1,
-            "scraping_strategy_used": "jina",
+            "scraping_strategy_used": scraping_strategy_used,
             "fetch_strategy": "jina",
             "source_endpoint": "https://r.jina.ai/",
         }
@@ -132,7 +137,7 @@ class JinaFetchStrategy(FetchStrategy):
         with open(metadata_path, "w", encoding="utf-8") as f:
             json.dump(metadata, f, indent=2, ensure_ascii=False)
 
-        active_logger.info(f"  💾 Text: {len(markdown_content):,} chars")
+        logger.info(f"  💾 Text: {len(markdown_content):,} chars")
 
         return {
             "url": url,
@@ -148,29 +153,27 @@ class JinaFetchStrategy(FetchStrategy):
         self,
         urls: list[str],
         output_dir: str,
-        logger: Optional[logging.Logger] = None,
     ) -> list[dict]:
-        active_logger = logger or logging.getLogger("price_fox")
         Path(output_dir).mkdir(exist_ok=True)
         browser_session_id = time.strftime("%Y%m%d_%H%M%S")
         results = []
 
-        active_logger.info(f"{'=' * 70}")
-        active_logger.info("🚀 BATCH SCRAPING - JINA READER MODE")
-        active_logger.info(f"{'=' * 70}")
-        active_logger.info(f"URLs to process: {len(urls)}")
-        active_logger.info(f"Output directory: {output_dir}")
-        active_logger.info(
+        logger.info(f"{'=' * 70}")
+        logger.info("🚀 BATCH SCRAPING - JINA READER MODE")
+        logger.info(f"{'=' * 70}")
+        logger.info(f"URLs to process: {len(urls)}")
+        logger.info(f"Output directory: {output_dir}")
+        logger.info(
             "Jina Reader endpoint: https://r.jina.ai/ (no API key, unauthenticated)"
         )
-        active_logger.info(
+        logger.info(
             f"Local rate limiter: {self.rate_limit_rpm} requests per minute"
         )
 
         for i, url in enumerate(urls, 1):
-            active_logger.info(f"📄 Processing {i}/{len(urls)}")
+            logger.info(f"📄 Processing {i}/{len(urls)}")
             try:
-                markdown_content = self._fetch_markdown(url=url, logger=active_logger)
+                markdown_content = self._fetch_markdown(url=url)
                 if not markdown_content.strip():
                     raise RuntimeError("Received empty content from Jina Reader")
                 result = self._write_result_files(
@@ -178,10 +181,9 @@ class JinaFetchStrategy(FetchStrategy):
                     output_dir=output_dir,
                     browser_session_id=browser_session_id,
                     markdown_content=markdown_content,
-                    logger=active_logger,
                 )
             except Exception as exc:
-                active_logger.error(f"  ❌ Error: {exc}")
+                logger.error(f"  ❌ Error: {exc}")
                 result = {
                     "url": url,
                     "status": "failed",

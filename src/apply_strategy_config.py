@@ -1,11 +1,9 @@
 import argparse
-import logging
 import sqlite3
 from pathlib import Path
 
 from config.settings import default_product_catalog_db_path
-
-logger = logging.getLogger(__name__)
+from logger import logger
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -45,10 +43,6 @@ def apply_sql_script(db_path: Path, sql_path: Path) -> None:
 
 
 def main() -> int:
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s | %(levelname)s | %(message)s",
-    )
     parser = _build_parser()
     args = parser.parse_args()
 

@@ -1,5 +1,4 @@
 {
-  "logger_name": "price_fox.{log_file_path_lower}",
   "logs_root": "{project_root}/log",
   "dict_config": {
     "version": 1,
@@ -22,7 +21,8 @@
         "level": "INFO",
         "formatter": "standard",
         "filename": "{log_file_path}",
-        "encoding": "utf-8"
+        "encoding": "utf-8",
+        "delay": true
       }
     },
     "loggers": {
