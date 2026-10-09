@@ -1,13 +1,22 @@
 import json
 import re
+import threading
+import time
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
+import torch
 from bs4 import BeautifulSoup
 from huggingface_hub import snapshot_download
-from transformers import pipeline, AutoModelForCausalLM, AutoTokenizer
+from transformers import (
+    pipeline,
+    AutoModelForCausalLM,
+    AutoTokenizer,
+    StoppingCriteria,
+    StoppingCriteriaList,
+)
 
 from cfg import CatalogConfig
 from logger import logger
@@ -26,9 +35,17 @@ class Parser:
     Parses fetched page content and extracts product pricing using Hugging Face.
     """
 
-    def __init__(self, catalog_config: CatalogConfig, model_id: str = "Qwen/Qwen2.5-1.5B-Instruct"):
+    MIN_PAGE_BYTES = 500
+
+    def __init__(
+        self,
+        catalog_config: CatalogConfig,
+        model_id: str = "Qwen/Qwen2.5-1.5B-Instruct",
+        llm_timeout_seconds: float = 300.0,
+    ):
         self.catalog_config = catalog_config
         self.model_id = model_id
+        self.llm_timeout_seconds = llm_timeout_seconds
         self.generator = None
         self.generator_task = None
         self._generator_init_error = None
@@ -881,6 +898,47 @@ class Parser:
             "provider": "huggingface-local",
         }
 
+    def _generate_with_timeout(self, prompt: str, timeout: float) -> str:
+        """
+        Run one generation in a worker thread; raise TimeoutError if it does not
+        finish in `timeout` seconds. The worker is also asked to stop via a
+        stopping criterion checked after every generated token, so an abandoned
+        generation does not keep burning CPU/memory once it gets control back.
+        """
+        cancel = threading.Event()
+
+        class _Cancel(StoppingCriteria):
+            def __call__(self, input_ids, scores, **kwargs):
+                return torch.full(
+                    (input_ids.shape[0],), cancel.is_set(), dtype=torch.bool
+                )
+
+        outcome: dict = {}
+
+        def worker():
+            try:
+                generated = self.generator(
+                    prompt,
+                    max_new_tokens=320,
+                    do_sample=False,
+                    return_full_text=False,
+                    max_time=timeout,
+                    stopping_criteria=StoppingCriteriaList([_Cancel()]),
+                )
+                outcome["text"] = generated[0]["generated_text"]
+            except Exception as exc:
+                outcome["error"] = exc
+
+        thread = threading.Thread(target=worker, daemon=True, name="hf-generate")
+        thread.start()
+        thread.join(timeout)
+        if thread.is_alive():
+            cancel.set()
+            raise TimeoutError
+        if "error" in outcome:
+            raise outcome["error"]
+        return outcome["text"]
+
     def _extract_price_with_hf(self, text: str) -> dict:
         if self.generator is None:
             logger.warning(
@@ -924,16 +982,31 @@ class Parser:
         best = None
         parsing_errors = []
 
+        deadline = time.monotonic() + self.llm_timeout_seconds
+
         for candidate in candidates:
             prompt = self._build_prompt(candidate)
+            remaining = deadline - time.monotonic()
             try:
-                generated = self.generator(
-                    prompt,
-                    max_new_tokens=320,
-                    do_sample=False,
-                    return_full_text=False,
+                if remaining <= 0:
+                    raise TimeoutError
+                response_text = self._generate_with_timeout(prompt, remaining)
+            except TimeoutError:
+                logger.warning(
+                    f"Local LLM produced no result within {self.llm_timeout_seconds:.0f}s; "
+                    "marking item as unparsable and skipping."
                 )
-                response_text = generated[0]["generated_text"]
+                return {
+                    "status": "failed",
+                    "price": None,
+                    "currency": None,
+                    "raw_price_text": None,
+                    "price_type": "other",
+                    "evidence_text": None,
+                    "confidence": 0,
+                    "provider": "huggingface-local",
+                    "error": f"Local LLM timed out after {self.llm_timeout_seconds:.0f}s (unparsable)",
+                }
             except Exception as exc:
                 parsing_errors.append(str(exc))
                 continue
@@ -991,6 +1064,21 @@ class Parser:
             "details": parsing_errors[:3],
         }
 
+    def _incomplete_page_error(self, source: TextSources) -> Optional[str]:
+        """
+        Error message when the fetched HTML is smaller than MIN_PAGE_BYTES (the
+        page response is considered incomplete), otherwise None.
+        """
+        if not source.html_path:
+            return None
+        size = Path(source.html_path).stat().st_size
+        if size >= self.MIN_PAGE_BYTES:
+            return None
+        return (
+            f"Incomplete page response: HTML is {size} bytes, "
+            f"less than the {self.MIN_PAGE_BYTES}-byte minimum"
+        )
+
     def parse_file(self, html_path: str | Path) -> dict:
         source = self._read_text_sources(Path(html_path).parent)
         return self._extract_price_with_default_pipeline(source)
@@ -1001,7 +1089,13 @@ class Parser:
         url = self._url_by_id.get(url_id)
         source = self._read_text_sources(url_folder)
 
-        out_of_stock_evidence = self._detect_out_of_stock(source)
+        skip_error = self._incomplete_page_error(source)
+        if skip_error is None and not source.text:
+            skip_error = "Missing readable HTML/TXT content"
+
+        out_of_stock_evidence = (
+            None if skip_error is not None else self._detect_out_of_stock(source)
+        )
         if out_of_stock_evidence is not None:
             logger.info(
                 f"Product url_id={url_id} detected as out of stock; "
@@ -1042,10 +1136,8 @@ class Parser:
             )
             return result
 
-        if not source.text:
-            logger.info(
-                f"No local content for url_id={url_id}; skipping LLM parse."
-            )
+        if skip_error is not None:
+            logger.info(f"url_id={url_id}: {skip_error}; skipping parse.")
             parse_finished_at_dt = datetime.utcnow()
             parse_finished_at = parse_finished_at_dt.isoformat()
             parse_duration_seconds = (
@@ -1063,7 +1155,7 @@ class Parser:
                 "evidence_text": None,
                 "confidence": 0,
                 "provider": None,
-                "error": "Missing readable HTML/TXT content",
+                "error": skip_error,
                 "model_id": self.model_id,
                 "parse_started_at": parse_started_at,
                 "parse_finished_at": parse_finished_at,
