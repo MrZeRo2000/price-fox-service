@@ -18,6 +18,9 @@ from logger import logger
 from .base_fetch_strategy import BaseFetchStrategy
 from .jina_strategy import JinaFetchStrategy
 
+# Shorter visible text is a placeholder (e.g. "Loading…"), not a rendered page.
+MIN_TEXT_LENGTH = 100
+
 
 class PlaywrightFetchStrategy(BaseFetchStrategy):
     def fetch_batch(
@@ -274,23 +277,24 @@ class PlaywrightFetchStrategy(BaseFetchStrategy):
                         f"(attempts={max_retries + 1})"
                     )
 
-                if text_length > 0:
+                if text_length >= MIN_TEXT_LENGTH:
                     logger.info(
-                        f"  ✅ Extracted non-empty text ({text_length:,} chars)"
+                        f"  ✅ Extracted text ({text_length:,} chars)"
                     )
                     break
 
                 if attempt < max_retries:
                     retry_delay = retry_intervals_seconds[attempt]
                     logger.warning(
-                        f"  ⚠️ Empty text content (text_length=0). "
-                        f"Retrying in {retry_delay}s..."
+                        f"  ⚠️ Text too short (text_length={text_length}, "
+                        f"min={MIN_TEXT_LENGTH}). Retrying in {retry_delay}s..."
                     )
                     time.sleep(retry_delay)
                     continue
 
                 raise RuntimeError(
-                    f"Empty text content after {max_retries} retries "
+                    f"Text shorter than {MIN_TEXT_LENGTH} chars "
+                    f"(text_length={text_length}) after {max_retries} retries "
                     f"(attempts={max_retries + 1})"
                 )
 
