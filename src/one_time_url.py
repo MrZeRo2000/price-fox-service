@@ -18,6 +18,7 @@ Usage:
     ./venv/Scripts/python src/one_time_url.py "https://example.com/product"
     ./venv/Scripts/python src/one_time_url.py "https://example.com/product" --db-path ./db/database/product-catalog.sqlite
     ./venv/Scripts/python src/one_time_url.py "https://example.com/product" --quiet
+    ./venv/Scripts/python src/one_time_url.py "https://example.com/product" --parse-only
 """
 
 import argparse
@@ -28,7 +29,7 @@ from pathlib import Path
 from cfg import CatalogConfig
 from logger import configure_logging, logger
 from models import CatalogData, CatalogUrl, Product
-from scraper import Scraper
+from scraper.pipeline import run_pipeline
 from session import resolve_latest_scrape_session_folder
 
 
@@ -73,6 +74,11 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Suppress stdout JSON output (file is still written).",
     )
+    parser.add_argument(
+        "--parse-only",
+        action="store_true",
+        help="Skip fetching; re-parse the latest one-time session already in data/one-time/.",
+    )
     return parser
 
 
@@ -94,8 +100,7 @@ def main() -> int:
     logger.info(f"One-time URL fetch+parse: {args.url}")
     logger.info(f"Data root: {one_time_root}")
 
-    scraper = Scraper(catalog_config)
-    result = scraper.execute()
+    result = run_pipeline(catalog_config, parse_only=args.parse_only)
 
     session_folder = resolve_latest_scrape_session_folder(one_time_root)
     output_root = session_folder if session_folder is not None else one_time_root

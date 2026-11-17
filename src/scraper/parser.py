@@ -49,6 +49,9 @@ class Parser:
         self.generator = None
         self.generator_task = None
         self._generator_init_error = None
+        # The model is loaded lazily (see _ensure_generator): many parses never need
+        # it (out-of-stock pages, heuristic hits), and loading is slow.
+        self._generator_init_attempted = False
         self._product_name_by_id = {
             product.id: product.name for product in self.catalog_config.product_catalog_data.products
         }
@@ -56,6 +59,12 @@ class Parser:
             item.url_id: str(item.url)
             for item in self.catalog_config.product_catalog_data.urls
         }
+
+    def _ensure_generator(self) -> None:
+        """Load the local model on first use; later calls are no-ops."""
+        if self.generator is not None or self._generator_init_attempted:
+            return
+        self._generator_init_attempted = True
         self._init_generator()
 
     def _is_model_cached_locally(self) -> bool:
@@ -458,6 +467,15 @@ class Parser:
 
         soup = BeautifulSoup(path.read_text(encoding="utf-8", errors="ignore"), "lxml")
         oos_markers = Parser._schema_out_of_stock_markers()
+
+        for link in soup.select("link"):
+            itemprop, availability = link.attrs.get('itemprop'), link.attrs.get('href')
+            if itemprop is not None and availability is not None:
+                normalized = availability.rsplit("/", 1)[-1].strip().lower()
+                normalized = normalized.replace("-", "").replace("_", "")
+                if normalized in oos_markers:
+                    return f"link schema availability: {availability}"
+
         for script in soup.select("script[type='application/ld+json']"):
             payload = script.string or script.get_text(" ", strip=True)
             if not payload:
@@ -472,9 +490,11 @@ class Parser:
                     continue
                 offers = item.get("offers")
                 offers_list = offers if isinstance(offers, list) else [offers]
+                '''
+                -- no longer works but may work in future
                 for offer in offers_list:
                     if not isinstance(offer, dict):
-                        continue
+                        continue                        
                     availability = offer.get("availability")
                     if not isinstance(availability, str):
                         continue
@@ -482,6 +502,7 @@ class Parser:
                     normalized = normalized.replace("-", "").replace("_", "")
                     if normalized in oos_markers:
                         return f"schema.org availability: {availability}"
+                        '''
         return None
 
     @staticmethod
@@ -941,6 +962,7 @@ class Parser:
         return outcome["text"]
 
     def _extract_price_with_hf(self, text: str) -> dict:
+        self._ensure_generator()
         if self.generator is None:
             logger.warning(
                 "Local LLM parse skipped: generator is not initialized "

@@ -77,6 +77,14 @@ One-time fetch + parse for a single ad-hoc URL (artifacts and parsed JSON land i
 python src/one_time_url.py "https://example.com/product"
 ```
 
+Parse only the results already fetched by a one-time URL run (no fetching; re-parses the latest session in `data/one-time/`):
+
+```bash
+python src/one_time_url.py "https://example.com/product" --parse-only
+```
+
+Don't use `main.py --parse-only --data-path ./data/one-time` for this: it would also persist the one-time results into the catalog DB.
+
 ## CLI Options (`src/main.py`)
 
 - `--data-path <path>`
@@ -106,6 +114,8 @@ python src/one_time_url.py "https://example.com/product"
   - overrides product catalog SQLite DB path.
 - `--quiet`
   - suppresses stdout JSON output (the result file is still written).
+- `--parse-only`
+  - skips fetching and re-parses the latest session already in `data/one-time/`.
 
 Output layout: `data/one-time/scrape/<timestamp>/1/1/page.html`, `page.txt`, `metadata.json`, `parsed.json`, plus a combined `data/one-time/scrape/<timestamp>/parsed_output.json`.
 
