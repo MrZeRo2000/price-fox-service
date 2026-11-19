@@ -417,7 +417,7 @@ class Parser:
             "відсутній у продажу",
             "відсутня у продажу",
             "недоступний у",
-            "Доступно в інших магазинах міста",
+            "доступно в інших магазинах міста",
             # English
             "out of stock",
             "sold out",
@@ -426,6 +426,36 @@ class Parser:
             "temporarily out of stock",
             "no longer available",
         )
+
+    @staticmethod
+    def _delivery_row_prefixes() -> tuple[str, ...]:
+        # Labels of delivery/pickup option rows (e.g. itbox "Самовивіз: Недоступний
+        # у вашому місті"). Such rows describe a shipping method, not whether the
+        # product itself can be bought, and itbox shows them as "unavailable" while
+        # its delivery widget is still loading. Compared against lowercased lines
+        # with apostrophes normalized to "'".
+        return (
+            # Ukrainian
+            "самовивіз",
+            "кур'єр",
+            "доставка",
+            "з магазину",
+            "у відділення",
+            "у поштомат",
+            "в відділення",
+            "в поштомат",
+            # Russian
+            "самовывоз",
+            "курьер",
+            "из магазина",
+            "в отделение",
+            "в почтомат",
+        )
+
+    @staticmethod
+    def _is_delivery_row(line: str) -> bool:
+        normalized = line.strip().lower().replace("’", "'").replace("ʼ", "'")
+        return normalized.startswith(Parser._delivery_row_prefixes())
 
     @staticmethod
     def _schema_out_of_stock_markers() -> tuple[str, ...]:
@@ -524,13 +554,35 @@ class Parser:
         lower = top_text.lower()
         for marker in Parser._out_of_stock_markers():
             position = lower.find(marker)
-            if position == -1:
-                continue
-            left = max(0, position - 40)
-            right = min(len(top_text), position + len(marker) + 40)
-            context = top_text[left:right].replace("\n", " ").strip()
-            return context
+            while position != -1:
+                if not Parser._is_in_delivery_row(top_text, position):
+                    left = max(0, position - 40)
+                    right = min(len(top_text), position + len(marker) + 40)
+                    return top_text[left:right].replace("\n", " ").strip()
+                position = lower.find(marker, position + len(marker))
         return None
+
+    @staticmethod
+    def _is_in_delivery_row(text: str, position: int) -> bool:
+        """
+        True when the match at `position` belongs to a delivery/pickup option row.
+
+        The row label is either on the same line (page.txt keeps table cells
+        tab-separated on one line) or on the nearest preceding non-empty line
+        (HTML-derived text puts each table cell on its own line).
+        """
+        line_start = text.rfind("\n", 0, position) + 1
+        line_end = text.find("\n", position)
+        line = text[line_start : line_end if line_end != -1 else len(text)]
+        if Parser._is_delivery_row(line):
+            return True
+
+        # Only a bare label ("Самовивіз:") counts, so that e.g. a "Доставка та
+        # оплата" menu item cannot hide a real out-of-stock badge right below it.
+        for previous in reversed(text[:line_start].splitlines()):
+            if previous.strip():
+                return previous.strip().endswith(":") and Parser._is_delivery_row(previous)
+        return False
 
     @staticmethod
     def _build_out_of_stock_result(evidence: str) -> dict:

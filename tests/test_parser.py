@@ -4,6 +4,7 @@ from pathlib import Path
 
 from cfg import CatalogConfig
 from scraper import Parser
+from scraper.parser import TextSources
 
 @pytest.fixture
 def config() -> CatalogConfig:
@@ -59,3 +60,44 @@ def test_deep_out_of_stock_marker_does_not_trigger(config: CatalogConfig):
     result = parser.parse_file(html_path)
     assert not result.get("out_of_stock")
     assert result["price"] == 329
+
+
+def test_itbox_delivery_widget_unavailable_is_not_out_of_stock(config: CatalogConfig):
+    # Bulk scrape captured itbox's delivery widget still loading, showing
+    # "Самовивіз: Недоступний у вашому місті". That is a delivery-option row,
+    # not product availability; the product is in stock at 304 UAH.
+    parser = Parser(config)
+    html_path = Path(__file__).parent / "data" / "page_itbox_finish_delivery_loading" / "page.html"
+    result = parser.parse_file(html_path)
+    assert not result.get("out_of_stock")
+    assert result["status"] == "success"
+    assert result["price"] == 304
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        # page.txt layout: label and value on one line
+        "Купити\nСамовивіз: Недоступний у вашому місті\nКур'єром за адресою: Недоступний у вашому місті",
+        # HTML-derived layout: label and value on separate lines
+        "Купити\nСамовивіз:\nНедоступний у вашому місті\nКур’єром за адресою:\nНедоступний у вашому місті",
+        # Russian
+        "Купить\nСамовывоз: Недоступен в вашем городе",
+    ],
+)
+def test_delivery_row_markers_do_not_trigger_out_of_stock(text: str):
+    assert Parser._detect_out_of_stock(TextSources(html_path=None, txt_path=None, text=text)) is None
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Товар\nНемає в наявності\nСамовивіз: Недоступний у вашому місті",
+        # a delivery row first must not hide a real badge further down
+        "Самовивіз: Недоступний у вашому місті\nТовар недоступний у вашому регіоні",
+        # a non-label "Доставка ..." line above must not hide a real badge
+        "Доставка та оплата\nНедоступний у вашому регіоні",
+    ],
+)
+def test_real_out_of_stock_markers_still_trigger(text: str):
+    assert Parser._detect_out_of_stock(TextSources(html_path=None, txt_path=None, text=text)) is not None
