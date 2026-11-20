@@ -74,6 +74,26 @@ def test_itbox_delivery_widget_unavailable_is_not_out_of_stock(config: CatalogCo
     assert result["price"] == 304
 
 
+def test_atb_available_in_other_regions_is_out_of_stock(config: CatalogConfig):
+    # ATB replaces price + "Купити" with "Доступно в інших регіонах" when the
+    # product cannot be bought in the selected region; without the marker the
+    # parser picked "60" from "60-120 хвилин" (delivery time) as the price.
+    parser = Parser(config)
+    html_path = Path(__file__).parent / "data" / "page_atb_ikra_other_regions" / "page.html"
+    result = parser.parse_file(html_path)
+    assert result["status"] == "failed"
+    assert result["price"] is None
+    assert result.get("out_of_stock") is True
+
+
+def test_atb_in_stock_page_still_parses(config: CatalogConfig):
+    parser = Parser(config)
+    html_path = Path(__file__).parent / "data" / "page_atb_somga_in_stock" / "page.html"
+    result = parser.parse_file(html_path)
+    assert not result.get("out_of_stock")
+    assert result["price"] == 297.6
+
+
 @pytest.mark.parametrize(
     "text",
     [

@@ -418,6 +418,11 @@ class Parser:
             "відсутня у продажу",
             "недоступний у",
             "доступно в інших магазинах міста",
+            # ATB shows these instead of price + "Купити" when the product cannot
+            # be bought in the selected region ("Доступно в інших регіонах" in the
+            # product block, "Товар доступний в інших регіонах" further down).
+            "доступно в інших регіонах",
+            "доступний в інших регіонах",
             # English
             "out of stock",
             "sold out",
